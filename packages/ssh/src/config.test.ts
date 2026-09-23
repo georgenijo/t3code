@@ -67,7 +67,7 @@ describe("ssh config", () => {
         },
         {
           alias: "devbox",
-          hostname: "devbox",
+          hostname: "devbox.example.com",
           username: null,
           port: null,
           source: "ssh-config",
@@ -88,12 +88,51 @@ describe("ssh config", () => {
         },
         {
           alias: "staging",
-          hostname: "staging",
+          hostname: "staging.example.com",
           username: null,
           port: null,
           source: "ssh-config",
         },
       ]);
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("prefers configured aliases over their known_hosts targets", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* makeTempHomeDir();
+      const sshDir = path.join(homeDir, ".ssh");
+      yield* fs.makeDirectory(sshDir);
+      yield* fs.writeFileString(
+        path.join(sshDir, "config"),
+        [
+          "Host mini",
+          "  HostName 100.111.210.10",
+          "Host work-box",
+          "  HostName work.example.com",
+          "Host *",
+          "  HostName fallback.example.com",
+          "",
+        ].join("\n"),
+      );
+      yield* fs.writeFileString(
+        path.join(sshDir, "known_hosts"),
+        [
+          "100.111.210.10 ssh-ed25519 AAAA",
+          "work.example.com ssh-ed25519 BBBB",
+          "fallback.example.com ssh-ed25519 CCCC",
+          "other.example.com ssh-ed25519 DDDD",
+          "",
+        ].join("\n"),
+      );
+
+      const hosts = yield* discoverSshHosts({ homeDir });
+      assert.deepEqual(
+        hosts.map(({ alias }) => alias),
+        ["fallback.example.com", "mini", "other.example.com", "work-box"],
+      );
+      assert.equal(hosts.find(({ alias }) => alias === "mini")?.hostname, "100.111.210.10");
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
