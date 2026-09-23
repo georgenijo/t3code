@@ -110,7 +110,7 @@ describe("ssh config", () => {
           "Host mini",
           "  HostName 100.111.210.10",
           "Host work-box",
-          "  HostName work.example.com",
+          '  HostName "work.example.com"',
           "Host *",
           "  HostName fallback.example.com",
           "",

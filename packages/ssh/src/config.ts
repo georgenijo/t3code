@@ -173,7 +173,7 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
         context.patterns = rawArgs[0]?.toLowerCase() === "all" ? ["*"] : [];
       }
       if (normalizedDirective === "hostname" && context.patterns.length > 0) {
-        const hostname = rawArgs[0];
+        const hostname = rawArgs[0]?.replace(/^(["'])(.*)\1$/u, "$2");
         if (hostname) {
           hostnameRules.push({
             guards: context.guards,
