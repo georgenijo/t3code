@@ -93,6 +93,7 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
   filePath: string,
   visited = new Set<string>(),
   homeDir: string,
+  configuredHostnames: Map<string, string>,
 ): Effect.fn.Return<
   ReadonlyArray<string>,
   PlatformError.PlatformError,
@@ -107,6 +108,7 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
   visited.add(resolvedPath);
 
   const aliases = new Set<string>();
+  let currentHosts: ReadonlyArray<string> = [];
   const directory = path.dirname(resolvedPath);
   const raw = yield* fs.readFileString(resolvedPath);
 
@@ -131,6 +133,7 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
             includedPath,
             visited,
             homeDir,
+            configuredHostnames,
           );
           for (const alias of includedAliases) {
             aliases.add(alias);
@@ -141,9 +144,23 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
     }
 
     if (normalizedDirective !== "host") {
+      if (normalizedDirective === "match") {
+        currentHosts = [];
+      }
+      if (normalizedDirective === "hostname" && currentHosts.length > 0) {
+        const hostname = rawArgs[0];
+        if (hostname && !hostname.includes("%")) {
+          for (const alias of currentHosts) {
+            if (!configuredHostnames.has(alias)) {
+              configuredHostnames.set(alias, hostname);
+            }
+          }
+        }
+      }
       continue;
     }
 
+    currentHosts = rawArgs.filter((alias) => alias.length > 0 && !hasSshPattern(alias));
     for (const alias of rawArgs) {
       if (alias.length === 0 || hasSshPattern(alias)) {
         continue;
@@ -224,10 +241,12 @@ export const discoverSshHosts = Effect.fnUntraced(
     }
 
     const sshDirectory = path.join(homeDir, ".ssh");
+    const configuredHostnames = new Map<string, string>();
     const configAliases = yield* collectSshConfigAliasesFromFile(
       path.join(sshDirectory, "config"),
       new Set<string>(),
       homeDir,
+      configuredHostnames,
     );
     const knownHosts = yield* readKnownHostsHostnames(path.join(sshDirectory, "known_hosts"));
     const discovered = new Map<string, DesktopDiscoveredSshHost>();
@@ -235,15 +254,18 @@ export const discoverSshHosts = Effect.fnUntraced(
     for (const alias of configAliases) {
       discovered.set(alias, {
         alias,
-        hostname: alias,
+        hostname: configuredHostnames.get(alias) ?? alias,
         username: null,
         port: null,
         source: "ssh-config",
       });
     }
 
+    const configuredTargets = new Set(
+      [...configuredHostnames.values()].map((hostname) => hostname.toLowerCase()),
+    );
     for (const hostname of knownHosts) {
-      if (discovered.has(hostname)) {
+      if (discovered.has(hostname) || configuredTargets.has(hostname.toLowerCase())) {
         continue;
       }
       discovered.set(hostname, {
