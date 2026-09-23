@@ -92,7 +92,18 @@ const expandGlob = Effect.fnUntraced(function* (pattern: string) {
 interface SshHostNameRule {
   readonly guards: ReadonlyArray<ReadonlyArray<string>>;
   readonly patterns: ReadonlyArray<string>;
-  readonly hostname: string | null;
+  readonly hostname: string;
+}
+
+function expandConfiguredHostname(hostname: string, alias: string): string | null {
+  let supported = true;
+  const expanded = hostname.replace(/%(.?)/gsu, (_, token: string) => {
+    if (token === "h") return alias.toLowerCase();
+    if (token === "%") return "%";
+    supported = false;
+    return "";
+  });
+  return supported ? expanded : null;
 }
 
 function matchesHostPatterns(alias: string, patterns: ReadonlyArray<string>): boolean {
@@ -170,7 +181,13 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
 
     if (normalizedDirective !== "host") {
       if (normalizedDirective === "match") {
-        context.patterns = rawArgs[0]?.toLowerCase() === "all" ? ["*"] : [];
+        const condition = rawArgs[0]?.toLowerCase();
+        context.patterns =
+          condition === "all" && rawArgs.length === 1
+            ? ["*"]
+            : condition === "originalhost" && rawArgs.length === 2
+              ? (rawArgs[1]?.split(",") ?? [])
+              : [];
       }
       if (normalizedDirective === "hostname" && context.patterns.length > 0) {
         const hostname = rawArgs[0]?.replace(/^(["'])(.*)\1$/u, "$2");
@@ -178,7 +195,7 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
           hostnameRules.push({
             guards: context.guards,
             patterns: context.patterns,
-            hostname: hostname.includes("%") ? null : hostname,
+            hostname,
           });
         }
       }
@@ -282,12 +299,14 @@ export const discoverSshHosts = Effect.fnUntraced(
     const configuredTargets = new Set<string>();
 
     for (const alias of configAliases) {
-      const hostname =
-        hostnameRules.find(
-          (rule) =>
-            rule.guards.every((guard) => matchesHostPatterns(alias, guard)) &&
-            matchesHostPatterns(alias, rule.patterns),
-        )?.hostname ?? alias;
+      const configuredHostname = hostnameRules.find(
+        (rule) =>
+          rule.guards.every((guard) => matchesHostPatterns(alias, guard)) &&
+          matchesHostPatterns(alias, rule.patterns),
+      )?.hostname;
+      const hostname = configuredHostname
+        ? (expandConfiguredHostname(configuredHostname, alias) ?? alias)
+        : alias;
       configuredTargets.add(hostname.toLowerCase());
       discovered.set(alias, {
         alias,
