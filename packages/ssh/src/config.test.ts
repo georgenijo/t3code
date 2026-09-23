@@ -157,6 +157,11 @@ describe("ssh config", () => {
           included: "",
           target: "shared.example.com",
         },
+        {
+          config: "Match originalhost work\n  Include target.conf\n",
+          included: "Host work\n  HostName work.example.com\n",
+          target: "work.example.com",
+        },
       ]) {
         const homeDir = yield* makeTempHomeDir();
         const sshDir = path.join(homeDir, ".ssh");
@@ -210,19 +215,44 @@ describe("ssh config", () => {
         );
         yield* fs.writeFileString(
           path.join(sshDir, "known_hosts"),
-          "work.example.com ssh-ed25519 AAAA\nwrong.example.com ssh-ed25519 BBBB\n",
+          "work.example.com ssh-ed25519 AAAA\ntokenized.internal ssh-ed25519 BBBB\nwrong.example.com ssh-ed25519 CCCC\n",
         );
 
         const hosts = yield* discoverSshHosts({ homeDir });
         assert.deepEqual(
           hosts.map(({ alias, hostname }) => [alias, hostname]),
           [
-            ["tokenized", "tokenized"],
+            ["tokenized", "tokenized.internal"],
             ["work", "work.example.com"],
             ["wrong.example.com", "wrong.example.com"],
           ],
         );
       }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("expands supported HostName tokens without treating escaped percents as tokens", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* makeTempHomeDir();
+      const sshDir = path.join(homeDir, ".ssh");
+      yield* fs.makeDirectory(sshDir);
+      yield* fs.writeFileString(
+        path.join(sshDir, "config"),
+        "Host Mixed\n  HostName %h.internal\nHost escaped\n  HostName zone%%en0\nHost unsupported\n  HostName %p.internal\n",
+      );
+      yield* fs.writeFileString(
+        path.join(sshDir, "known_hosts"),
+        "mixed.internal ssh-ed25519 AAAA\nzone%en0 ssh-ed25519 BBBB\n",
+      );
+
+      const hosts = yield* discoverSshHosts({ homeDir });
+      assert.deepEqual(Object.fromEntries(hosts.map(({ alias, hostname }) => [alias, hostname])), {
+        Mixed: "mixed.internal",
+        escaped: "zone%en0",
+        unsupported: "unsupported",
+      });
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
   it.effect("parses known_hosts entries without returning hashed hosts", () =>
