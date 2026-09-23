@@ -136,6 +136,96 @@ describe("ssh config", () => {
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
+  it.effect("uses the effective HostName across includes, wildcards, and Match all", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      for (const fixture of [
+        {
+          config: "Host work\n  Include target.conf\n",
+          included: "  HostName work.example.com\n",
+          target: "work.example.com",
+        },
+        {
+          config:
+            "Host *\n  HostName bastion.example.com\nHost work\n  HostName ignored.example.com\n",
+          included: "",
+          target: "bastion.example.com",
+        },
+        {
+          config: "Host work\nMatch all\n  HostName shared.example.com\n",
+          included: "",
+          target: "shared.example.com",
+        },
+      ]) {
+        const homeDir = yield* makeTempHomeDir();
+        const sshDir = path.join(homeDir, ".ssh");
+        yield* fs.makeDirectory(sshDir);
+        yield* fs.writeFileString(path.join(sshDir, "config"), fixture.config);
+        yield* fs.writeFileString(path.join(sshDir, "target.conf"), fixture.included);
+        yield* fs.writeFileString(
+          path.join(sshDir, "known_hosts"),
+          `${fixture.target} ssh-ed25519 AAAA\n`,
+        );
+
+        const hosts = yield* discoverSshHosts({ homeDir });
+        assert.deepEqual(hosts, [
+          {
+            alias: "work",
+            hostname: fixture.target,
+            username: null,
+            port: null,
+            source: "ssh-config",
+          },
+        ]);
+      }
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect(
+    "restores the enclosing Host after an Include and respects tokenized first values",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const homeDir = yield* makeTempHomeDir();
+        const sshDir = path.join(homeDir, ".ssh");
+        yield* fs.makeDirectory(sshDir);
+        yield* fs.writeFileString(
+          path.join(sshDir, "config"),
+          [
+            "Host work",
+            "  Include nested.conf",
+            "  HostName work.example.com",
+            "Host tokenized",
+            "  HostName %h.internal",
+            "Host tokenized",
+            "  HostName wrong.example.com",
+            "",
+          ].join("\n"),
+        );
+        yield* fs.writeFileString(
+          path.join(sshDir, "nested.conf"),
+          "Host nested\n  HostName nested.example.com\n",
+        );
+        yield* fs.writeFileString(
+          path.join(sshDir, "known_hosts"),
+          "work.example.com ssh-ed25519 AAAA\nwrong.example.com ssh-ed25519 BBBB\n",
+        );
+
+        const hosts = yield* discoverSshHosts({ homeDir });
+        assert.deepEqual(
+          hosts.map(({ alias, hostname }) => [alias, hostname]),
+          [
+            ["nested", "nested.example.com"],
+            ["tokenized", "tokenized"],
+            ["work", "work.example.com"],
+            ["wrong.example.com", "wrong.example.com"],
+          ],
+        );
+      }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect("parses known_hosts entries without returning hashed hosts", () =>
     Effect.sync(() => {
       assert.deepEqual(
