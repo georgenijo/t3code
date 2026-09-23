@@ -90,6 +90,7 @@ const expandGlob = Effect.fnUntraced(function* (pattern: string) {
 });
 
 interface SshHostNameRule {
+  readonly guards: ReadonlyArray<ReadonlyArray<string>>;
   readonly patterns: ReadonlyArray<string>;
   readonly hostname: string | null;
 }
@@ -110,7 +111,10 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
   filePath: string,
   visited = new Set<string>(),
   homeDir: string,
-  context: { patterns: ReadonlyArray<string> },
+  context: {
+    patterns: ReadonlyArray<string>;
+    guards: ReadonlyArray<ReadonlyArray<string>>;
+  },
   hostnameRules: Array<SshHostNameRule>,
 ): Effect.fn.Return<
   ReadonlyArray<string>,
@@ -138,7 +142,6 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
     const [directive = "", ...rawArgs] = splitDirectiveArgs(stripped);
     const normalizedDirective = directive.toLowerCase();
     if (normalizedDirective === "include") {
-      const enclosingPatterns = context.patterns;
       for (const includePattern of rawArgs) {
         const resolvedPattern = yield* resolveSshConfigIncludePattern(
           includePattern,
@@ -151,7 +154,10 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
             includedPath,
             visited,
             homeDir,
-            context,
+            {
+              patterns: context.patterns,
+              guards: [...context.guards, context.patterns],
+            },
             hostnameRules,
           );
           for (const alias of includedAliases) {
@@ -159,7 +165,6 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
           }
         }
       }
-      context.patterns = enclosingPatterns;
       continue;
     }
 
@@ -171,6 +176,7 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
         const hostname = rawArgs[0];
         if (hostname) {
           hostnameRules.push({
+            guards: context.guards,
             patterns: context.patterns,
             hostname: hostname.includes("%") ? null : hostname,
           });
@@ -184,7 +190,9 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
       if (alias.length === 0 || hasSshPattern(alias)) {
         continue;
       }
-      aliases.add(alias);
+      if (context.guards.every((guard) => matchesHostPatterns(alias, guard))) {
+        aliases.add(alias);
+      }
     }
   }
 
@@ -266,7 +274,7 @@ export const discoverSshHosts = Effect.fnUntraced(
       path.join(sshDirectory, "config"),
       new Set<string>(),
       homeDir,
-      { patterns: ["*"] },
+      { patterns: ["*"], guards: [] },
       hostnameRules,
     );
     const knownHosts = yield* readKnownHostsHostnames(path.join(sshDirectory, "known_hosts"));
@@ -275,7 +283,11 @@ export const discoverSshHosts = Effect.fnUntraced(
 
     for (const alias of configAliases) {
       const hostname =
-        hostnameRules.find((rule) => matchesHostPatterns(alias, rule.patterns))?.hostname ?? alias;
+        hostnameRules.find(
+          (rule) =>
+            rule.guards.every((guard) => matchesHostPatterns(alias, guard)) &&
+            matchesHostPatterns(alias, rule.patterns),
+        )?.hostname ?? alias;
       configuredTargets.add(hostname.toLowerCase());
       discovered.set(alias, {
         alias,

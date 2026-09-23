@@ -29,10 +29,10 @@ describe("ssh config", () => {
       yield* fs.writeFileString(
         path.join(sshDir, "config"),
         [
+          "Include=config.d/*.conf",
           "Host devbox",
           "  HostName devbox.example.com",
           "Host=equalsbox",
-          "Include=config.d/*.conf",
           "",
         ].join("\n"),
       );
@@ -217,7 +217,6 @@ describe("ssh config", () => {
         assert.deepEqual(
           hosts.map(({ alias, hostname }) => [alias, hostname]),
           [
-            ["nested", "nested.example.com"],
             ["tokenized", "tokenized"],
             ["work", "work.example.com"],
             ["wrong.example.com", "wrong.example.com"],
