@@ -185,6 +185,7 @@ export interface OpenCodeCommandResult {
 
 export interface OpenCodeInventory {
   readonly providerList: ProviderListResponse;
+  readonly defaultModel?: string;
   readonly agents: ReadonlyArray<Agent>;
   readonly skills: ReadonlyArray<OpenCodeSkill>;
 }
@@ -254,6 +255,7 @@ export interface OpenCodeRuntimeShape {
   }) => OpencodeClient;
   readonly loadOpenCodeInventory: (
     client: OpencodeClient,
+    options?: { readonly includeConfiguredModel?: boolean },
   ) => Effect.Effect<OpenCodeInventory, OpenCodeRuntimeError>;
   readonly loadOpenCodeSkills: (
     client: OpencodeClient,
@@ -922,10 +924,42 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const loadSkills = (client: OpencodeClient) =>
     loadOpenCodeSkills(client).pipe(Effect.orElseSucceed((): ReadonlyArray<OpenCodeSkill> => []));
 
-  const loadOpenCodeInventory: OpenCodeRuntimeShape["loadOpenCodeInventory"] = (client) =>
-    Effect.all([loadProviders(client), loadAgents(client), loadSkills(client)], {
-      concurrency: "unbounded",
-    }).pipe(Effect.map(([providerList, agents, skills]) => ({ providerList, agents, skills })));
+  const loadConfiguredModel = (client: OpencodeClient) =>
+    Effect.tryPromise({
+      try: async (signal) => {
+        const { data } = await client.config.get(undefined, { signal });
+        // Resolved configuration contains credentials. Retain only model IDs;
+        // never include the config response or request in diagnostics.
+        return data?.model ? { defaultModel: data.model } : {};
+      },
+      catch: () =>
+        new OpenCodeRuntimeError({
+          operation: "config.get",
+          detail: "Unable to read OpenCode model defaults.",
+        }),
+    }).pipe(Effect.orElseSucceed(() => ({})));
+
+  const loadOpenCodeInventory: OpenCodeRuntimeShape["loadOpenCodeInventory"] = (client, options) =>
+    Effect.all(
+      [
+        loadProviders(client),
+        loadAgents(client),
+        loadSkills(client),
+        options?.includeConfiguredModel === false
+          ? Effect.succeed({})
+          : loadConfiguredModel(client),
+      ],
+      {
+        concurrency: "unbounded",
+      },
+    ).pipe(
+      Effect.map(([providerList, agents, skills, defaults]) => ({
+        providerList,
+        agents,
+        skills,
+        ...defaults,
+      })),
+    );
 
   const loadInventoryFromCli: OpenCodeRuntimeShape["loadInventoryFromCli"] = (input) =>
     Effect.gen(function* () {

@@ -67,6 +67,22 @@ describe("thread settings sheet state", () => {
     );
   });
 
+  it("matches an exact OpenCode routing slug with nested model identifiers", () => {
+    const model = {
+      ...modelOption("cpa-cursor/cursor/composer-2.5"),
+      label: "Composer 2.5",
+      subtitle: "CPA · Cursor",
+    };
+
+    expect(
+      modelMatchesCatalogQuery({
+        model,
+        providerLabel: "OpenCode",
+        query: "cpa-cursor/cursor/composer-2.5",
+      }),
+    ).toBe(true);
+  });
+
   it("clears staging when the applied model is pressed", () => {
     expect(
       pendingModelAfterPress({

@@ -39,11 +39,23 @@ in **Settings > Providers** for that environment. On mobile, use **Refresh model
 in the thread settings. Reconnecting also refreshes the catalog; periodic provider
 health checks do not.
 
-Credential changes are read on refresh. Native OpenCode configuration can remain
-cached while the local helper is running. Let it sit for 30 seconds without model
-refreshes or text-generation work, then refresh again to reload the files. Repeated
-refreshes keep the helper alive. An external server may need its own reload or
-restart before T3 Code can see configuration changes.
+Local model and provider discovery reloads OpenCode’s merged host configuration
+on every refresh, without restarting active sessions. The catalog preserves
+configured provider names and full model identifiers. OpenCode’s configured
+`model` default is used when OpenCode is selected for a new thread and no
+project, remembered, or manually selected model takes precedence. Workspace
+skills can stay cached while text generation or skill loads keep the local
+helper alive. Let it sit idle for 30 seconds after the last such use, then
+refresh again to reload those files. An external server may need its own reload
+or restart before T3 Code can see configuration changes.
+
+OpenCode retains its configured `small_model` for its own background work. T3
+Code’s separate text-generation setting controls titles, commit messages, and
+other T3-generated text; an explicit selection there takes precedence.
+
+A model appearing in the catalog confirms discovery, not tool-use compatibility.
+For CPA’s Cursor connection, text replies work but tool calls are currently known
+to stall; use a tested GPT or native Claude connection for coding-agent work.
 
 Existing threads keep their selected model and options even when it disappears
 from the catalog. If OpenCode rejects that model, select an available one and retry.

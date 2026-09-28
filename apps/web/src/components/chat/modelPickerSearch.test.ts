@@ -6,16 +6,30 @@ describe("buildModelPickerSearchText", () => {
   it("builds provider-agnostic search text from generic fields", () => {
     expect(
       buildModelPickerSearchText({
+        slug: "cpa-claude/claude-opus-5-5",
         driverKind: "opencode",
         providerDisplayName: "opencode",
         name: "Claude Opus 4.7",
         subProvider: "GitHub Copilot",
       }),
-    ).toBe("claude opus 4.7 github copilot opencode opencode");
+    ).toBe("claude opus 4.7 github copilot opencode opencode cpa-claude/claude-opus-5-5");
   });
 });
 
 describe("scoreModelPickerSearch", () => {
+  it("matches an exact OpenCode routing slug with nested model identifiers", () => {
+    const model = {
+      slug: "cpa-cursor/cursor/composer-2.5",
+      driverKind: "opencode",
+      providerDisplayName: "OpenCode",
+      name: "Composer 2.5",
+      subProvider: "CPA · Cursor",
+    };
+
+    expect(scoreModelPickerSearch(model, "cpa-cursor/cursor/composer-2.5")).not.toBeNull();
+    expect(scoreModelPickerSearch(model, "composer")).not.toBeNull();
+  });
+
   it("matches typo-tolerant multi-token queries", () => {
     expect(
       scoreModelPickerSearch(

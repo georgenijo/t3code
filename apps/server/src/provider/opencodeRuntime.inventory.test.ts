@@ -47,11 +47,12 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
       });
 
       const inventoryFiber = yield* runtime.loadOpenCodeInventory(client).pipe(Effect.forkChild);
-      yield* Queue.takeN(started, 3);
+      yield* Queue.takeN(started, 4);
       yield* Fiber.interrupt(inventoryFiber);
 
       NodeAssert.deepEqual((yield* Queue.takeAll(aborted)).toSorted(), [
         "/agent",
+        "/config",
         "/provider",
         "/skill",
       ]);
@@ -62,6 +63,7 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
     Effect.gen(function* () {
       const runtime = yield* OpenCodeRuntime;
       const client = {
+        config: { get: () => Promise.resolve({ data: {} }) },
         provider: {
           list: () =>
             Promise.resolve({
@@ -90,6 +92,7 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
     Effect.gen(function* () {
       const runtime = yield* OpenCodeRuntime;
       const client = {
+        config: { get: () => Promise.resolve({ data: {} }) },
         provider: {
           list: () =>
             Promise.resolve({
@@ -114,10 +117,39 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
     }),
   );
 
+  it.effect("keeps provider inventory when configured model discovery fails", () =>
+    Effect.gen(function* () {
+      const runtime = yield* OpenCodeRuntime;
+      const client = {
+        config: { get: () => Promise.reject(new Error("config endpoint unavailable")) },
+        provider: {
+          list: () =>
+            Promise.resolve({
+              data: {
+                connected: ["openai"],
+                all: [],
+                default: {},
+              },
+            }),
+        },
+        app: {
+          agents: () => Promise.resolve({ data: [] }),
+          skills: () => Promise.resolve({ data: [] }),
+        },
+      } as unknown as OpencodeClient;
+
+      const inventory = yield* runtime.loadOpenCodeInventory(client);
+
+      NodeAssert.deepEqual(inventory.providerList.connected, ["openai"]);
+      NodeAssert.equal(inventory.defaultModel, undefined);
+    }),
+  );
+
   it.effect("keeps only SDK skill metadata in inventory", () =>
     Effect.gen(function* () {
       const runtime = yield* OpenCodeRuntime;
       const client = {
+        config: { get: () => Promise.resolve({ data: {} }) },
         provider: {
           list: () =>
             Promise.resolve({
@@ -152,6 +184,39 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
           description: "Review code changes",
           location: "/skills/review/SKILL.md",
         },
+      ]);
+    }),
+  );
+
+  it.effect("retains only configured model defaults, never resolved credentials", () =>
+    Effect.gen(function* () {
+      const runtime = yield* OpenCodeRuntime;
+      const client = createOpencodeClient({
+        baseUrl: "http://opencode.test",
+        fetch: Object.assign(
+          async (input: string | Request | URL) => {
+            const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+            return Response.json(
+              path === "/config"
+                ? {
+                    model: "openai/gpt-6-sol",
+                    provider: { openai: { options: { apiKey: "secret-value" } } },
+                  }
+                : path === "/provider"
+                  ? { connected: [], all: [], default: {} }
+                  : [],
+            );
+          },
+          { preconnect: () => undefined },
+        ),
+      });
+      const inventory = yield* runtime.loadOpenCodeInventory(client);
+      NodeAssert.equal(inventory.defaultModel, "openai/gpt-6-sol");
+      NodeAssert.deepEqual(Object.keys(inventory).sort(), [
+        "agents",
+        "defaultModel",
+        "providerList",
+        "skills",
       ]);
     }),
   );

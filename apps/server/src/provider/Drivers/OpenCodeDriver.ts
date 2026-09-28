@@ -151,11 +151,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         effectiveConfig,
         serverConfig.cwd,
         processEnv,
-      ).pipe(
-        Effect.map(stampIdentity),
-        Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
-        Effect.provideService(OpenCodeRuntime, openCodeRuntime),
-      );
+      ).pipe(Effect.map(stampIdentity), Effect.provideService(OpenCodeRuntime, openCodeRuntime));
       // NOTE: the local branch intentionally uses the shared SDK server
       // instead of `opencode debug skill` (loadSkillsFromCli). The CLI writes
       // its full JSON inventory to stdout, but the Bun-compiled binary does

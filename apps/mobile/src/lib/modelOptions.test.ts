@@ -103,6 +103,73 @@ describe("mobile model options", () => {
     ]);
   });
 
+  it("uses the discovered CPA OpenCode default and preserves full nested selections", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "opencode",
+          driver: "opencode",
+          displayName: "OpenCode",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            {
+              slug: "cpa-cursor/cursor/composer-2.5",
+              name: "Composer 2.5",
+              subProvider: "CPA · Cursor",
+              isCustom: false,
+              capabilities: null,
+            },
+            {
+              slug: "openai/gpt-6-sol",
+              name: "GPT-6 Sol",
+              subProvider: "CPA · GPT",
+              isCustom: false,
+              isDefault: true,
+              capabilities: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+    const explicit = {
+      instanceId: ProviderInstanceId.make("opencode"),
+      model: "cpa-cursor/cursor/composer-2.5",
+    };
+    const options = buildModelOptions(config, null);
+
+    expect(options).toMatchObject([
+      {
+        label: "Composer 2.5",
+        subtitle: "CPA · Cursor",
+        selection: explicit,
+      },
+      {
+        label: "GPT-6 Sol",
+        subtitle: "CPA · GPT",
+        isDefault: true,
+        selection: { instanceId: "opencode", model: "openai/gpt-6-sol" },
+      },
+    ]);
+    expect(
+      resolveNewTaskModelSelection({
+        draftSelection: null,
+        projectDefaultSelection: null,
+        stickySelection: null,
+        modelOptions: options,
+      }),
+    ).toEqual({ instanceId: "opencode", model: "openai/gpt-6-sol" });
+    expect(
+      resolveNewTaskModelSelection({
+        draftSelection: null,
+        projectDefaultSelection: null,
+        stickySelection: explicit,
+        modelOptions: options,
+      }),
+    ).toBe(explicit);
+  });
+
   it("does not materialize catalog defaults for missing stored options", () => {
     const config = {
       providers: [

@@ -474,6 +474,42 @@ describe("resolveDefaultProviderModelSelection", () => {
     });
   });
 
+  it("uses the OpenCode runtime default without changing a nested model identifier", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("opencode"),
+        instanceId: "opencode",
+        models: [
+          model("cpa-cursor/cursor/composer-2.5"),
+          model("openai/gpt-6-sol", false, true),
+          model("cpa-claude/claude-opus-5-5"),
+        ],
+      }),
+    ];
+
+    expect(resolveDefaultProviderModelSelection(providers, null)).toEqual({
+      instanceId: "opencode",
+      model: "openai/gpt-6-sol",
+    });
+  });
+
+  it("keeps an explicit OpenCode selection byte-for-byte when a runtime default is present", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("opencode"),
+        instanceId: "opencode",
+        models: [model("openai/gpt-6-sol", false, true), model("cpa-cursor/cursor/composer-2.5")],
+      }),
+    ];
+    const stored = {
+      instanceId: ProviderInstanceId.make("opencode"),
+      model: "cpa-cursor/cursor/composer-2.5",
+      options: [{ id: "variant", value: "precise" }],
+    };
+
+    expect(resolveDefaultProviderModelSelection(providers, stored)).toBe(stored);
+  });
+
   it("preserves a valid stored selection including its options", () => {
     const providers = [
       provider({

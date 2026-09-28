@@ -17,7 +17,6 @@ import {
   resolveOpenCodeServerPassword,
   type OpenCodeRuntimeShape,
 } from "../opencodeRuntime.ts";
-import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
 import type { OpenCodeInventory } from "../opencodeRuntime.ts";
 const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
@@ -41,6 +40,7 @@ const runtimeMock = {
     inventoryError: null as Error | null,
     connectionError: null as Error | null,
     inventoryCwd: null as string | null,
+    inventoryOptions: [] as Array<{ readonly includeConfiguredModel?: boolean } | undefined>,
     closeCalls: 0,
     sdkClientInputs: [] as Array<{
       baseUrl: string;
@@ -60,6 +60,7 @@ const runtimeMock = {
     this.state.inventoryError = null;
     this.state.connectionError = null;
     this.state.inventoryCwd = null;
+    this.state.inventoryOptions.length = 0;
     this.state.closeCalls = 0;
     this.state.sdkClientInputs.length = 0;
     this.state.inventory = {
@@ -93,7 +94,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         exitCode: Effect.never,
       };
     }),
-  connectToOpenCodeServer: ({ serverUrl, serverPassword }) =>
+  connectToOpenCodeServer: ({ serverUrl, serverPassword, environment }) =>
     Effect.gen(function* () {
       if (runtimeMock.state.connectionError) {
         return yield* new OpenCodeRuntimeError({
@@ -109,9 +110,14 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }),
         );
       }
+      const resolvedServerPassword = resolveOpenCodeServerPassword({
+        external: Boolean(serverUrl),
+        ...(serverPassword !== undefined ? { serverPassword } : {}),
+        ...(environment !== undefined ? { environment } : {}),
+      });
       return {
-        url: serverUrl ?? "http://127.0.0.1:4301",
-        ...(serverPassword ? { serverPassword } : {}),
+        url: serverUrl || "http://127.0.0.1:4301",
+        ...(resolvedServerPassword ? { serverPassword: resolvedServerPassword } : {}),
         version: "1.14.19",
         exitCode: null,
         external: Boolean(serverUrl),
@@ -133,8 +139,9 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
     runtimeMock.state.sdkClientInputs.push(input);
     return {} as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>;
   },
-  loadOpenCodeInventory: () =>
-    runtimeMock.state.inventoryError
+  loadOpenCodeInventory: (_client, options) => {
+    runtimeMock.state.inventoryOptions.push(options);
+    return runtimeMock.state.inventoryError
       ? Effect.fail(
           new OpenCodeRuntimeError({
             operation: "loadOpenCodeInventory",
@@ -142,7 +149,8 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             cause: runtimeMock.state.inventoryError,
           }),
         )
-      : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory),
+      : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory);
+  },
   loadInventoryFromCli: ({ cwd }) => {
     runtimeMock.state.inventoryCwd = cwd;
     return runtimeMock.state.inventoryError
@@ -183,19 +191,7 @@ const checkProvider = Effect.fn("checkProvider")(function* (
   cwd = process.cwd(),
   environment?: NodeJS.ProcessEnv,
 ) {
-  return yield* Effect.scoped(
-    Effect.gen(function* () {
-      const serverOwner = yield* OpenCodeServerOwner.make({
-        binaryPath: settings.binaryPath,
-        directory: cwd,
-        ...(settings.serverPassword ? { serverPassword: settings.serverPassword } : {}),
-        ...(environment ? { environment } : {}),
-      });
-      return yield* checkOpenCodeProviderStatus(settings, cwd, environment).pipe(
-        Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
-      );
-    }),
-  );
+  return yield* checkOpenCodeProviderStatus(settings, cwd, environment);
 });
 
 it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
@@ -297,6 +293,50 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
     }),
   );
 
+  it.effect("discovers configured defaults, labels, and nested model IDs on every refresh", () =>
+    Effect.gen(function* () {
+      const inventory = (defaultModel: string) => ({
+        defaultModel,
+        providerList: {
+          connected: ["openai", "cpa-cursor"],
+          default: {},
+          all: [
+            {
+              id: "openai",
+              name: "CPA · GPT",
+              models: { sol: { id: "gpt-6-sol", name: "Sol", variants: {} } },
+            },
+            {
+              id: "cpa-cursor",
+              name: "CPA · Cursor",
+              models: { composer: { id: "cursor/composer-2.5", name: "Composer", variants: {} } },
+            },
+          ],
+        },
+        agents: [],
+        skills: [],
+      });
+      runtimeMock.state.inventory = inventory("openai/gpt-6-sol");
+      const first = yield* checkProvider(makeOpenCodeSettings());
+      NodeAssert.equal(first.models.find((model) => model.isDefault)?.slug, "openai/gpt-6-sol");
+      NodeAssert.equal(
+        first.models.find((model) => model.slug === "openai/gpt-6-sol")?.subProvider,
+        "CPA · GPT",
+      );
+      NodeAssert.equal(
+        first.models.find((model) => model.slug === "cpa-cursor/cursor/composer-2.5")?.subProvider,
+        "CPA · Cursor",
+      );
+      runtimeMock.state.inventory = inventory("cpa-cursor/cursor/composer-2.5");
+      const second = yield* checkProvider(makeOpenCodeSettings());
+      NodeAssert.equal(
+        second.models.find((model) => model.isDefault)?.slug,
+        "cpa-cursor/cursor/composer-2.5",
+      );
+      NodeAssert.equal(runtimeMock.state.closeCalls, 2);
+    }),
+  );
+
   it.effect("includes OpenCode skills in the provider snapshot", () =>
     Effect.gen(function* () {
       runtimeMock.state.inventory = {
@@ -375,6 +415,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
           serverPassword: "secret-password",
         },
       ]);
+      NodeAssert.deepEqual(runtimeMock.state.inventoryOptions, [undefined]);
       NodeAssert.equal(runtimeMock.state.closeCalls, 1);
       NodeAssert.equal(runtimeMock.state.inventoryCwd, null);
     }),
@@ -440,6 +481,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus with configured server URL", (i
           directory: process.cwd(),
         },
       ]);
+      NodeAssert.deepEqual(runtimeMock.state.inventoryOptions, [{ includeConfiguredModel: false }]);
     }),
   );
 

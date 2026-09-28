@@ -26,7 +26,6 @@ import {
   type OpenCodeInventory,
 } from "../opencodeRuntime.ts";
 import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
-import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 
 const OPENCODE_PRESENTATION = {
   displayName: "OpenCode",
@@ -275,6 +274,7 @@ function flattenOpenCodeModels(input: OpenCodeInventory): ReadonlyArray<ServerPr
         name,
         ...(subProvider ? { subProvider } : {}),
         isCustom: false,
+        ...(`${provider.id}/${model.id}` === input.defaultModel ? { isDefault: true } : {}),
         capabilities: openCodeCapabilitiesForModel({
           providerID: provider.id,
           model,
@@ -364,13 +364,8 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   openCodeSettings: OpenCodeSettings,
   cwd: string,
   environment?: NodeJS.ProcessEnv,
-): Effect.fn.Return<
-  ServerProviderDraft,
-  never,
-  OpenCodeRuntime | OpenCodeServerOwner.OpenCodeServerOwner
-> {
+): Effect.fn.Return<ServerProviderDraft, never, OpenCodeRuntime> {
   const openCodeRuntime = yield* OpenCodeRuntime;
-  const serverOwner = yield* OpenCodeServerOwner.OpenCodeServerOwner;
   const resolvedEnvironment = environment ?? process.env;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const customModels = openCodeSettings.customModels;
@@ -478,6 +473,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     readonly url: string;
     readonly serverPassword?: string;
     readonly version: string;
+    readonly external: boolean;
   }) =>
     openCodeRuntime
       .loadOpenCodeInventory(
@@ -486,20 +482,22 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
           directory: cwd,
           ...(server.serverPassword !== undefined ? { serverPassword: server.serverPassword } : {}),
         }),
+        ...(server.external ? [{ includeConfiguredModel: false }] : []),
       )
       .pipe(Effect.map((inventory) => ({ inventory, version: server.version })));
-  const inventoryEffect = isExternalServer
-    ? openCodeRuntime
-        .connectToOpenCodeServer({
-          binaryPath: openCodeSettings.binaryPath,
-          directory: cwd,
-          serverUrl: openCodeSettings.serverUrl,
-          ...(openCodeSettings.serverPassword
-            ? { serverPassword: openCodeSettings.serverPassword }
-            : {}),
-        })
-        .pipe(Effect.flatMap(loadInventory), Effect.scoped)
-    : serverOwner.withServer(loadInventory);
+  // A fresh discovery helper observes merged host/project config immediately.
+  // Do not dispose a session's instance (or an external server) to refresh models.
+  const inventoryEffect = openCodeRuntime
+    .connectToOpenCodeServer({
+      binaryPath: openCodeSettings.binaryPath,
+      directory: cwd,
+      serverUrl: openCodeSettings.serverUrl,
+      ...(openCodeSettings.serverPassword
+        ? { serverPassword: openCodeSettings.serverPassword }
+        : {}),
+      environment: resolvedEnvironment,
+    })
+    .pipe(Effect.flatMap(loadInventory), Effect.scoped);
   const inventoryExit = yield* Effect.exit(
     inventoryEffect.pipe(
       Effect.mapError(

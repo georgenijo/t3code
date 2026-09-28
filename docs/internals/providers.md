@@ -13,10 +13,11 @@ session or catalog state.
 
 T3-managed OpenCode chat uses one server per thread. Its MCP registrations are directory-scoped, while
 T3's MCP connection is thread-scoped. Sharing a chat server between threads in one directory would
-let them replace each other's connection. Catalog and text-generation work can share the
+let them replace each other's connection. Text-generation work can share the
 [instance-owned helper](../../apps/server/src/provider/OpenCodeServerOwner.ts), which closes
-after an idle period. External OpenCode servers remain externally owned and can require an
-external restart to pick up configuration changes.
+after an idle period. Catalog discovery uses a short-lived connection so local configuration
+changes are visible on refresh. External OpenCode servers remain externally owned and can
+require an external restart to pick up configuration changes.
 
 OpenCode also stores persistent approval grants per directory. Automatic full-access replies use
 `once` so they cannot widen a supervised thread's permissions on a shared external server.
