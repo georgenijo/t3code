@@ -53,6 +53,34 @@ You can also send `/compact` in an existing conversation. Web and desktop offer
 a large older thread. See [commands and skills](./composer.md#commands-and-skills)
 for using composer commands.
 
+### Custom models behind a router
+
+A router's model may support more context than Claude Code recognizes from its
+name. For a custom model, the provider's `customModels` settings entry can include
+`contextWindowTokens`, an integer from `8192` to `1000000`:
+
+```json
+{
+  "slug": "my-router-model",
+  "name": "My router model",
+  "contextWindowTokens": 872000
+}
+```
+
+Use a limit verified for your router, account, and model. The number above is an
+example, not a default or a guarantee of provider capacity. Leave the field absent
+to use Claude Code's normal model handling. Built-in Claude models retain their
+own context settings.
+
+T3 applies the custom allowance when starting the model and when switching models
+within the same Claude provider. It keeps automatic compaction enabled and honors
+your separate **Auto-compact after** setting. If your Claude Code version cannot
+apply the allowance during a switch, the switch reports an error instead of
+continuing with an incorrect limit.
+
+The context meter uses the active model's reported limit. If the limit is unknown,
+it shows only tokens used; a value such as `82k` is usage, not the model's capacity.
+
 ## Usage limits
 
 If your Claude subscription runs out of usage mid-turn, the thread shows which

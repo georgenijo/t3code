@@ -29,6 +29,7 @@ export interface CustomModelDraft {
   readonly slug: string;
   readonly name: string;
   readonly descriptors: ReadonlyArray<EditorDescriptor>;
+  readonly contextWindowTokens?: number;
 }
 
 export interface DescriptorPreset {
@@ -175,6 +176,9 @@ export function draftFromDefinition(entry: CustomModelDefinition): CustomModelDr
     slug: entry.slug,
     name: entry.name === entry.slug ? "" : entry.name,
     descriptors: (entry.capabilities?.optionDescriptors ?? []).map(descriptorToEditor),
+    ...(entry.contextWindowTokens !== undefined
+      ? { contextWindowTokens: entry.contextWindowTokens }
+      : {}),
   };
 }
 
@@ -252,6 +256,9 @@ export function definitionFromDraft(draft: CustomModelDraft): CustomModelDefinit
   return {
     slug: draft.slug,
     name: name || draft.slug,
+    ...(draft.contextWindowTokens !== undefined
+      ? { contextWindowTokens: draft.contextWindowTokens }
+      : {}),
     capabilities:
       descriptors.length > 0 ? createModelCapabilities({ optionDescriptors: descriptors }) : null,
   };
