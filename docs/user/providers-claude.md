@@ -56,8 +56,8 @@ for using composer commands.
 ### Custom models behind a router
 
 A router's model may support more context than Claude Code recognizes from its
-name. For a custom model, the provider's `customModels` settings entry can include
-`contextWindowTokens`, an integer from `8192` to `1000000`:
+name. For a custom non-Claude model ID, the provider's `customModels` settings
+entry can include `contextWindowTokens`, an integer from `8192` to `1000000`:
 
 ```json
 {
@@ -70,13 +70,15 @@ name. For a custom model, the provider's `customModels` settings entry can inclu
 Use a limit verified for your router, account, and model. The number above is an
 example, not a default or a guarantee of provider capacity. Leave the field absent
 to use Claude Code's normal model handling. Built-in Claude models retain their
-own context settings.
+own context settings. Claude Code ignores this override for model IDs beginning
+with `claude-`, so T3 rejects the field for those IDs instead of showing an
+incorrect limit.
 
-T3 applies the custom allowance when starting the model and when switching models
-within the same Claude provider. It keeps automatic compaction enabled and honors
-your separate **Auto-compact after** setting. If your Claude Code version cannot
-apply the allowance during a switch, the switch reports an error instead of
-continuing with an incorrect limit.
+T3 applies the custom allowance whenever it starts the selected model, including
+after switching models within the same Claude provider. It keeps automatic
+compaction enabled and honors your separate **Auto-compact after** setting. If
+Claude Code cannot start the selected model with that allowance, the switch
+reports an error instead of continuing with an incorrect limit.
 
 The context meter uses the active model's reported limit. If the limit is unknown,
 it shows only tokens used; a value such as `82k` is usage, not the model's capacity.

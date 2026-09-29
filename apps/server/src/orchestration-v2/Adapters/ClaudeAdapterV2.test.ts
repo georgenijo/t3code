@@ -60,6 +60,8 @@ import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
 import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
+import { scopeClaudeModelCatalog } from "../../provider/ClaudeModelCatalog.ts";
+import { SYNTHETIC_CLAUDE_MODEL_CATALOG } from "../../provider/ClaudeModelCatalog.testFixtures.ts";
 import type { EventNdjsonLogger } from "../../provider/EventNdjsonLogger.ts";
 import {
   ProviderAdapterV2RuntimePolicy,
@@ -159,6 +161,95 @@ function makeClaudeTestTurnInput(input: {
 }
 
 describe("ClaudeAdapterV2 runtime query policy", () => {
+  it("applies each selected custom model's context allowance to query startup", () => {
+    const settings = Schema.decodeSync(ClaudeSettings)({
+      customModels: [
+        { slug: "gpt-synthetic-large", contextWindowTokens: 872_000 },
+        { slug: "gpt-synthetic-small", contextWindowTokens: 272_000 },
+      ],
+    });
+    const modelCatalog = scopeClaudeModelCatalog(
+      SYNTHETIC_CLAUDE_MODEL_CATALOG,
+      settings.customModels,
+    );
+    const querySettingsFor = (model: string) =>
+      ClaudeAdapterV2.makeClaudeQueryOptions({
+        modelSelection: {
+          instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+          model,
+        },
+        modelCatalog,
+        nativeThreadId: `native-${model}`,
+        resume: false,
+        cwd: "/workspace",
+        settings,
+        environment: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "500000" },
+      });
+
+    const large = querySettingsFor("gpt-synthetic-large");
+    const small = querySettingsFor("gpt-synthetic-small");
+    const unknown = querySettingsFor("gpt-synthetic-unknown");
+
+    assert.deepNestedInclude(large.settings, {
+      env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "872000" },
+    });
+    assert.deepNestedInclude(small.settings, {
+      env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "272000" },
+    });
+    assert.notProperty(unknown.settings ?? {}, "env");
+    assert.equal(unknown.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "500000");
+  });
+
+  it("uses the selected custom model capacity and clears unknown capacity", () => {
+    const customModel = "gpt-synthetic-active";
+    const modelCatalog = scopeClaudeModelCatalog(SYNTHETIC_CLAUDE_MODEL_CATALOG, [
+      { slug: customModel, contextWindowTokens: 272_000 },
+    ]);
+    const usage = { input_tokens: 100, output_tokens: 10 };
+    const selection = (model: string): ModelSelection => ({
+      instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+      model,
+    });
+
+    assert.equal(
+      ClaudeAdapterV2.claudeProviderTurnTokenUsage(
+        usage,
+        selection(customModel),
+        "2026-10-07T00:00:00.000Z",
+        modelCatalog,
+      ).maxTokens,
+      272_000,
+    );
+    assert.isNull(
+      ClaudeAdapterV2.claudeProviderTurnTokenUsage(
+        usage,
+        selection("gpt-synthetic-unknown"),
+        "2026-10-07T00:00:00.000Z",
+        modelCatalog,
+      ).maxTokens,
+    );
+  });
+
+  it("rejects custom context allowances for Claude-prefixed model ids", () => {
+    const model = "claude-synthetic-router-model";
+    const modelCatalog = scopeClaudeModelCatalog(SYNTHETIC_CLAUDE_MODEL_CATALOG, [
+      { slug: model, contextWindowTokens: 872_000 },
+    ]);
+    const plan = ClaudeAdapterV2.claudeSelectionTransition(modelCatalog, {
+      current: CLAUDE_TEST_MODEL_SELECTION,
+      target: {
+        instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+        model,
+      },
+      sessionCapabilities: ClaudeAdapterV2.ClaudeProviderCapabilitiesV2,
+    });
+
+    assert.equal(plan.type, "reject");
+    if (plan.type === "reject") {
+      assert.match(plan.reason, /non-Claude model identifiers/);
+    }
+  });
+
   it.each([false, true])("requests thinking summaries with resume=%s", (resume) => {
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: CLAUDE_TEST_MODEL_SELECTION,
