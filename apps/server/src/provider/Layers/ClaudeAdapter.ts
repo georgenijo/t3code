@@ -21,6 +21,7 @@ import {
   type SDKMessage,
   type SDKRateLimitInfo,
   type SDKResultMessage,
+  type Settings as ClaudeCodeSettings,
   type SettingSource,
   type SDKUserMessage,
   type ModelUsage,
@@ -101,6 +102,7 @@ import {
   isClaudeCatalogUltracodeEffort,
   normalizeClaudeCatalogEffort,
   resolveClaudeCatalogApiModelId,
+  resolveClaudeCatalogCustomContextWindowTokens,
   resolveClaudeCatalogContextWindowTokens,
   resolveClaudeCatalogEffort,
   resolveClaudeModelSlug,
@@ -225,6 +227,9 @@ const remapClaudeForkTurnBoundaries = (
 };
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+const CLAUDE_CONTEXT_WINDOW_ENV = "CLAUDE_CODE_MAX_CONTEXT_TOKENS";
+const DEFAULT_CUSTOM_CLAUDE_CONTEXT_WINDOW = 200_000;
+const CLAUDE_NATIVE_MODEL_ID = /^claude(?:-|$)/i;
 type ClaudeTextStreamKind = Extract<
   RuntimeContentStreamKind,
   "assistant_text" | "reasoning_text" | "reasoning_summary_text"
@@ -449,6 +454,10 @@ interface ClaudeSessionContext {
   readonly liveTaskIds: Set<string>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
+  /** Context limit currently written into Claude Code's flag-settings env. */
+  appliedContextWindowOverride: number | undefined;
+  /** Flag-settings env keys T3 owns and must preserve across shallow updates. */
+  flagSettingsEnvironment: Record<string, string>;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
   lastAssistantUuid: string | undefined;
@@ -466,6 +475,9 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
+  readonly applyFlagSettings?: (settings: {
+    [K in keyof ClaudeCodeSettings]?: ClaudeCodeSettings[K] | null;
+  }) => Promise<void>;
   readonly close: () => void;
 }
 
@@ -676,18 +688,19 @@ function asRuntimeItemId(value: string): RuntimeItemId {
   return RuntimeItemId.make(value);
 }
 
-function maxClaudeContextWindowFromModelUsage(
+function claudeContextWindowFromModelUsage(
   modelUsage: Record<string, ModelUsage> | undefined,
+  activeApiModelId: string | undefined,
 ): number | undefined {
   if (!modelUsage) return undefined;
 
-  let maxContextWindow: number | undefined;
-  for (const value of Object.values(modelUsage)) {
-    const contextWindow = value.contextWindow;
-    maxContextWindow = Math.max(maxContextWindow ?? 0, contextWindow);
+  if (activeApiModelId) {
+    const activeUsage = modelUsage[activeApiModelId];
+    return finitePositiveInteger(activeUsage?.contextWindow);
   }
 
-  return maxContextWindow;
+  const usages = Object.values(modelUsage);
+  return usages.length === 1 ? finitePositiveInteger(usages[0]?.contextWindow) : undefined;
 }
 
 function selectedClaudeContextWindow(
@@ -2666,7 +2679,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     errorMessage?: string,
     result?: SDKResultMessage,
   ) {
-    const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
+    const resultContextWindow = claudeContextWindowFromModelUsage(
+      result?.modelUsage,
+      context.currentApiModelId,
+    );
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
     }
@@ -4862,6 +4878,28 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const thinking = thinkingSupported
         ? getModelSelectionBooleanOptionValue(modelSelection, "thinking")
         : undefined;
+      const initialContextWindowOverride = resolveClaudeCatalogCustomContextWindowTokens(
+        modelCatalog,
+        modelSelection,
+      );
+      if (
+        initialContextWindowOverride !== undefined &&
+        modelSelection?.model &&
+        CLAUDE_NATIVE_MODEL_ID.test(modelSelection.model)
+      ) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue:
+            "Custom contextWindowTokens is supported only for non-Claude model identifiers; Claude-prefixed models use Claude Code's native context window.",
+        });
+      }
+      const flagSettingsEnvironment =
+        initialContextWindowOverride === undefined
+          ? {}
+          : {
+              [CLAUDE_CONTEXT_WINDOW_ENV]: String(initialContextWindowOverride),
+            };
       const thinkingDisplayArg = extraArgs["thinking-display"];
       const requestThinkingSummaries = shouldRequestClaudeThinkingSummaries({
         thinking,
@@ -4891,6 +4929,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(requestThinkingSummaries ? { showThinkingSummaries: true } : {}),
         ...(fastMode ? { fastMode: true } : {}),
         ...(ultracode ? { ultracode: true } : {}),
+        ...(Object.keys(flagSettingsEnvironment).length > 0
+          ? { env: flagSettingsEnvironment }
+          : {}),
         ...(claudeSettings.autoCompactWindow
           ? { autoCompactWindow: Number(claudeSettings.autoCompactWindow) }
           : {}),
@@ -5049,6 +5090,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         liveTaskIds,
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
+        appliedContextWindowOverride: initialContextWindowOverride,
+        flagSettingsEnvironment,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
         lastAssistantUuid: resumeState?.resumeSessionAt,
@@ -5134,6 +5177,50 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
+  const applyClaudeContextWindowOverride = Effect.fn("applyClaudeContextWindowOverride")(function* (
+    context: ClaudeSessionContext,
+    contextWindow: number | undefined,
+    resetContextWindow: number,
+    threadId: ThreadId,
+    method: string,
+  ) {
+    if (!context.query.applyFlagSettings) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method,
+        detail: "This Claude Code runtime cannot safely change the model context window.",
+      });
+    }
+
+    if (contextWindow !== undefined) {
+      const environment = {
+        ...context.flagSettingsEnvironment,
+        [CLAUDE_CONTEXT_WINDOW_ENV]: String(contextWindow),
+      };
+      yield* Effect.tryPromise({
+        try: () => context.query.applyFlagSettings!({ env: environment }),
+        catch: (cause) => toRequestError(threadId, method, cause),
+      });
+      return environment;
+    }
+
+    const resetEnvironment = {
+      ...context.flagSettingsEnvironment,
+      [CLAUDE_CONTEXT_WINDOW_ENV]: String(resetContextWindow),
+    };
+    yield* Effect.tryPromise({
+      try: () => context.query.applyFlagSettings!({ env: resetEnvironment }),
+      catch: (cause) => toRequestError(threadId, method, cause),
+    });
+    const { [CLAUDE_CONTEXT_WINDOW_ENV]: _ownedContextWindow, ...restoredEnvironment } =
+      context.flagSettingsEnvironment;
+    yield* Effect.tryPromise({
+      try: () => context.query.applyFlagSettings!({ env: restoredEnvironment }),
+      catch: (cause) => toRequestError(threadId, method, cause),
+    });
+    return restoredEnvironment;
+  });
+
   const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
     const modelCatalog = yield* modelCatalogEffect;
@@ -5162,11 +5249,118 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (modelSelection?.model) {
       const apiModelId = resolveClaudeCatalogApiModelId(modelCatalog, modelSelection);
       if (context.currentApiModelId !== apiModelId) {
-        yield* Effect.tryPromise({
+        const catalogContextWindow = selectedClaudeContextWindow(modelCatalog, modelSelection);
+        const customContextWindow = resolveClaudeCatalogCustomContextWindowTokens(
+          modelCatalog,
+          modelSelection,
+        );
+        if (
+          customContextWindow !== undefined &&
+          CLAUDE_NATIVE_MODEL_ID.test(modelSelection.model)
+        ) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue:
+              "Custom contextWindowTokens is supported only for non-Claude model identifiers; Claude-prefixed models use Claude Code's native context window.",
+          });
+        }
+        const configuredContextWindow = finitePositiveInteger(
+          Number(claudeEnvironment[CLAUDE_CONTEXT_WINDOW_ENV]),
+        );
+        const nextContextWindowOverride = customContextWindow;
+        const overrideChanged = nextContextWindowOverride !== context.appliedContextWindowOverride;
+        const previousOverride = context.appliedContextWindowOverride;
+        const previousFlagSettingsEnvironment = context.flagSettingsEnvironment;
+        const resetContextWindow = configuredContextWindow ?? DEFAULT_CUSTOM_CLAUDE_CONTEXT_WINDOW;
+        let nextFlagSettingsEnvironment = previousFlagSettingsEnvironment;
+
+        if (overrideChanged) {
+          if (!context.query.applyFlagSettings) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/setModel",
+              detail: "This Claude Code runtime cannot safely change the model context window.",
+            });
+          }
+          const applyExit = yield* applyClaudeContextWindowOverride(
+            context,
+            nextContextWindowOverride,
+            resetContextWindow,
+            input.threadId,
+            "turn/applyFlagSettings",
+          ).pipe(Effect.exit);
+          if (Exit.isFailure(applyExit)) {
+            const restoreExit = yield* applyClaudeContextWindowOverride(
+              context,
+              previousOverride,
+              resetContextWindow,
+              input.threadId,
+              "turn/restoreFlagSettings",
+            ).pipe(Effect.exit);
+            if (Exit.isFailure(restoreExit)) {
+              yield* Effect.exit(stopSessionInternal(context));
+            }
+            return yield* Effect.failCause(applyExit.cause);
+          }
+          nextFlagSettingsEnvironment = applyExit.value;
+        }
+
+        const setModelExit = yield* Effect.tryPromise({
           try: () => context.query.setModel(apiModelId),
           catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
-        });
+        }).pipe(Effect.exit);
+        if (Exit.isFailure(setModelExit)) {
+          if (overrideChanged) {
+            const restoreExit = yield* applyClaudeContextWindowOverride(
+              context,
+              previousOverride,
+              resetContextWindow,
+              input.threadId,
+              "turn/restoreFlagSettings",
+            ).pipe(Effect.exit);
+            if (Exit.isSuccess(restoreExit)) {
+              context.appliedContextWindowOverride = previousOverride;
+              context.flagSettingsEnvironment = restoreExit.value;
+            } else {
+              yield* Effect.exit(stopSessionInternal(context));
+            }
+          }
+          return yield* Effect.failCause(setModelExit.cause);
+        }
+
+        context.appliedContextWindowOverride = nextContextWindowOverride;
+        context.flagSettingsEnvironment = nextFlagSettingsEnvironment;
         context.currentApiModelId = apiModelId;
+        context.lastKnownContextWindow = catalogContextWindow;
+        if (context.lastKnownTokenUsage) {
+          const {
+            maxTokens: _staleMaxTokens,
+            usedTokens,
+            lastUsedTokens,
+            ...usageWithoutContext
+          } = context.lastKnownTokenUsage;
+          const rebasedUsage = {
+            ...usageWithoutContext,
+            usedTokens:
+              catalogContextWindow === undefined
+                ? usedTokens
+                : Math.min(usedTokens, catalogContextWindow),
+            ...(lastUsedTokens !== undefined
+              ? {
+                  lastUsedTokens:
+                    catalogContextWindow === undefined
+                      ? lastUsedTokens
+                      : Math.min(lastUsedTokens, catalogContextWindow),
+                }
+              : {}),
+            ...(catalogContextWindow !== undefined ? { maxTokens: catalogContextWindow } : {}),
+          };
+          yield* emitThreadTokenUsage(context, rebasedUsage, {
+            rawMethod: "claude/setModel",
+            rawPayload: { model: apiModelId },
+          });
+        }
       }
       context.session = {
         ...context.session,

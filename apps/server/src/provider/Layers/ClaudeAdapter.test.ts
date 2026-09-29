@@ -12,6 +12,7 @@ import type {
   PermissionResult,
   SDKMessage,
   SDKUserMessage,
+  Settings as ClaudeCodeSettings,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   ApprovalRequestId,
@@ -71,8 +72,13 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
+  public readonly applyFlagSettingsCalls: Array<{
+    [K in keyof ClaudeCodeSettings]?: ClaudeCodeSettings[K] | null;
+  }> = [];
   public closeCalls = 0;
   public closeError: unknown | undefined;
+  public setModelError: unknown | undefined;
+  public readonly applyFlagSettingsErrors: Array<unknown | undefined> = [];
   /** Set by tests that exercise Claude's graceful interrupt. */
   public interrupt?: () => Promise<unknown>;
 
@@ -112,6 +118,9 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setModel = async (model?: string): Promise<void> => {
     this.setModelCalls.push(model);
+    if (this.setModelError !== undefined) {
+      throw this.setModelError;
+    }
   };
 
   readonly setPermissionMode = async (mode: PermissionMode): Promise<void> => {
@@ -120,6 +129,16 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
     this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
+  };
+
+  readonly applyFlagSettings = async (settings: {
+    [K in keyof ClaudeCodeSettings]?: ClaudeCodeSettings[K] | null;
+  }): Promise<void> => {
+    this.applyFlagSettingsCalls.push(settings);
+    const error = this.applyFlagSettingsErrors.shift();
+    if (error !== undefined) {
+      throw error;
+    }
   };
 
   readonly close = (): void => {
@@ -5315,6 +5334,502 @@ describe("ClaudeAdapterLive", () => {
           },
         });
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("applies custom context settings across model switches", () => {
+    const largeModel = "gpt-synthetic-large";
+    const smallModel = "gpt-synthetic-small";
+    const unknownModel = "gpt-synthetic-unknown";
+    const harness = makeHarness({
+      claudeConfig: {
+        customModels: [
+          { slug: largeModel, contextWindowTokens: 872_000 },
+          { slug: smallModel, contextWindowTokens: 272_000 },
+        ],
+      },
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), largeModel),
+      });
+
+      const initialSettings = harness.getLastCreateQueryInput()?.options.settings;
+      assert.equal(typeof initialSettings, "object");
+      assert.deepEqual(typeof initialSettings === "object" ? initialSettings.env : undefined, {
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS: "872000",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "use the smaller model",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), smallModel),
+        attachments: [],
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "use an unknown model",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), unknownModel),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        { env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "272000" } },
+        { env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "200000" } },
+        { env: {} },
+      ]);
+      assert.deepEqual(harness.query.setModelCalls, [smallModel, unknownModel]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("restores inherited context settings after leaving a custom model", () => {
+    const customModel = "gpt-synthetic-custom";
+    const unknownModel = "gpt-synthetic-unknown";
+    const harness = makeHarness({
+      environment: {
+        ...process.env,
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS: "500000",
+      },
+      claudeConfig: {
+        customModels: [{ slug: customModel, contextWindowTokens: 872_000 }],
+      },
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), customModel),
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "switch models",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), unknownModel),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        { env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "500000" } },
+        { env: {} },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("restores the prior context setting when a model switch fails", () => {
+    const largeModel = "gpt-synthetic-large";
+    const smallModel = "gpt-synthetic-small";
+    const harness = makeHarness({
+      claudeConfig: {
+        customModels: [
+          { slug: largeModel, contextWindowTokens: 872_000 },
+          { slug: smallModel, contextWindowTokens: 272_000 },
+        ],
+      },
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), largeModel),
+      });
+      harness.query.setModelError = new Error("set model failed");
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId: THREAD_ID,
+          input: "switch models",
+          modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), smallModel),
+          attachments: [],
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error._tag, "ProviderAdapterRequestError");
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        { env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "272000" } },
+        { env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "872000" } },
+      ]);
+      assert.deepEqual(harness.query.setModelCalls, [smallModel]);
+      assert.equal((yield* adapter.listSessions())[0]?.model, largeModel);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("applies a custom context setting when switching from native Claude", () => {
+    const customModel = "gpt-synthetic-custom";
+    const harness = makeHarness({
+      claudeConfig: {
+        customModels: [{ slug: customModel, contextWindowTokens: 872_000 }],
+      },
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+        ),
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "switch models",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), customModel),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        { env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "872000" } },
+      ]);
+      assert.deepEqual(harness.query.setModelCalls, [customModel]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("restores a native context after the first custom switch fails", () => {
+    const customModel = "gpt-synthetic-custom";
+    const harness = makeHarness({
+      claudeConfig: {
+        customModels: [{ slug: customModel, contextWindowTokens: 872_000 }],
+      },
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+        ),
+      });
+      harness.query.setModelError = new Error("set model failed");
+
+      yield* adapter
+        .sendTurn({
+          threadId: THREAD_ID,
+          input: "switch models",
+          modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), customModel),
+          attachments: [],
+        })
+        .pipe(Effect.flip);
+
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        { env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "872000" } },
+        { env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "200000" } },
+        { env: {} },
+      ]);
+      assert.equal((yield* adapter.listSessions())[0]?.model, SYNTHETIC_CLAUDE_CAPABLE_MODEL);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("closes the session when a failed model switch cannot restore context", () => {
+    const largeModel = "gpt-synthetic-large";
+    const smallModel = "gpt-synthetic-small";
+    const harness = makeHarness({
+      claudeConfig: {
+        customModels: [
+          { slug: largeModel, contextWindowTokens: 872_000 },
+          { slug: smallModel, contextWindowTokens: 272_000 },
+        ],
+      },
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), largeModel),
+      });
+      harness.query.setModelError = new Error("set model failed");
+      harness.query.applyFlagSettingsErrors.push(undefined, new Error("restore context failed"));
+
+      yield* adapter
+        .sendTurn({
+          threadId: THREAD_ID,
+          input: "switch models",
+          modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), smallModel),
+          attachments: [],
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(yield* adapter.hasSession(THREAD_ID), false);
+      assert.equal(harness.query.closeCalls, 1);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not switch models when live context settings are unavailable", () => {
+    const largeModel = "gpt-synthetic-large";
+    const smallModel = "gpt-synthetic-small";
+    const harness = makeHarness({
+      claudeConfig: {
+        customModels: [
+          { slug: largeModel, contextWindowTokens: 872_000 },
+          { slug: smallModel, contextWindowTokens: 272_000 },
+        ],
+      },
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), largeModel),
+      });
+      Object.assign(harness.query, { applyFlagSettings: undefined });
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId: THREAD_ID,
+          input: "switch models",
+          modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), smallModel),
+          attachments: [],
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error._tag, "ProviderAdapterRequestError");
+      assert.deepEqual(harness.query.setModelCalls, []);
+      assert.equal((yield* adapter.listSessions())[0]?.model, largeModel);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("uses the active model context instead of a historical maximum", () => {
+    const activeModel = "gpt-synthetic-active";
+    const historicalModel = "claude-synthetic-historical[1m]";
+    const harness = makeHarness({
+      claudeConfig: {
+        customModels: [{ slug: activeModel, contextWindowTokens: 272_000 }],
+      },
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const usageEventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "thread.token-usage.updated"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), activeModel),
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), activeModel),
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: "sdk-session-active-model-context",
+        usage: { input_tokens: 100, output_tokens: 10 },
+        modelUsage: {
+          [historicalModel]: { contextWindow: 1_000_000, maxOutputTokens: 64_000 },
+          [activeModel]: { contextWindow: 272_000, maxOutputTokens: 64_000 },
+        },
+      } as unknown as SDKMessage);
+
+      const usageEvent = yield* Fiber.join(usageEventFiber);
+      assert.equal(usageEvent._tag, "Some");
+      if (usageEvent._tag === "Some" && usageEvent.value.type === "thread.token-usage.updated") {
+        assert.equal(usageEvent.value.payload.usage.maxTokens, 272_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("clears stale context metadata when switching to an unknown model", () => {
+    const previousModel = "gpt-synthetic-previous";
+    const unknownModel = "gpt-synthetic-unknown";
+    const harness = makeHarness({
+      claudeConfig: {
+        customModels: [{ slug: previousModel, contextWindowTokens: 872_000 }],
+      },
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const firstUsageEmitted = yield* Deferred.make<void>();
+      const usageEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "thread.token-usage.updated"),
+        Stream.tap(() => Deferred.succeed(firstUsageEmitted, undefined).pipe(Effect.asVoid)),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), previousModel),
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "task-cleared-context",
+        description: "Checking context",
+        usage: { total_tokens: 88 },
+        session_id: "sdk-session-cleared-context",
+        uuid: "task-cleared-context-progress",
+      } as unknown as SDKMessage);
+      yield* Deferred.await(firstUsageEmitted);
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "switch models",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), unknownModel),
+        attachments: [],
+      });
+
+      const usageEvents = Array.from(yield* Fiber.join(usageEventsFiber));
+      assert.equal(usageEvents[0]?.type, "thread.token-usage.updated");
+      assert.equal(usageEvents[1]?.type, "thread.token-usage.updated");
+      if (
+        usageEvents[0]?.type === "thread.token-usage.updated" &&
+        usageEvents[1]?.type === "thread.token-usage.updated"
+      ) {
+        assert.equal(usageEvents[0].payload.usage.maxTokens, 872_000);
+        assert.equal(usageEvents[1].payload.usage.maxTokens, undefined);
+        assert.equal(usageEvents[1].payload.usage.usedTokens, 88);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("leaves fresh native Claude context settings unchanged", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+        ),
+      });
+
+      const settings = harness.getLastCreateQueryInput()?.options.settings;
+      assert.equal(typeof settings, "object");
+      assert.equal(typeof settings === "object" ? settings.env : undefined, undefined);
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, []);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects custom context overrides for Claude-prefixed model ids", () => {
+    const model = "claude-synthetic-router-model";
+    const harness = makeHarness({
+      claudeConfig: {
+        customModels: [{ slug: model, contextWindowTokens: 872_000 }],
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const error = yield* adapter
+        .startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), model),
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error._tag, "ProviderAdapterValidationError");
+      assert.match(error.message, /non-Claude model identifiers/);
+      assert.equal(harness.getLastCreateQueryInput(), undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects a Claude-prefixed custom context before switching models", () => {
+    const model = "claude-synthetic-router-model";
+    const harness = makeHarness({
+      claudeConfig: {
+        customModels: [{ slug: model, contextWindowTokens: 872_000 }],
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+        ),
+      });
+      const error = yield* adapter
+        .sendTurn({
+          threadId: THREAD_ID,
+          input: "switch models",
+          modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), model),
+          attachments: [],
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error._tag, "ProviderAdapterValidationError");
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, []);
+      assert.deepEqual(harness.query.setModelCalls, []);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

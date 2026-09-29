@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { CustomModelEntry, ProviderInstanceId, type ModelCapabilities } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-
 import {
   applyClaudePromptEffortPrefix,
   buildExplicitProviderOptionSelectionsFromDescriptors,
@@ -16,6 +15,8 @@ import {
   getProviderOptionBooleanSelectionValue,
   getProviderOptionStringSelectionValue,
 } from "./model.ts";
+
+const decodeCustomModelEntry = Schema.decodeUnknownSync(CustomModelEntry);
 
 const codexCaps: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [
@@ -250,13 +251,13 @@ describe("readCustomModelEntries", () => {
     const entries = readCustomModelEntries([setting]);
     expect(entries).toEqual([{ ...setting, name: "custom-gpt", capabilities: null }]);
     expect(entries.map(toCustomModelSetting)).toEqual([setting]);
-    expect(Schema.decodeUnknownSync(CustomModelEntry)(setting)).toEqual(setting);
+    expect(decodeCustomModelEntry(setting)).toEqual(setting);
   });
 
   it("rejects invalid context allowances on the wire and drops them when reading opaque settings", () => {
     for (const contextWindowTokens of [0, 8_191, 1_000_001, 872_000.5, "872000", NaN]) {
       const setting = { slug: "custom-gpt", contextWindowTokens };
-      expect(() => Schema.decodeUnknownSync(CustomModelEntry)(setting)).toThrow();
+      expect(() => decodeCustomModelEntry(setting)).toThrow();
       expect(readCustomModelEntries([setting])).toEqual([
         { slug: "custom-gpt", name: "custom-gpt", capabilities: null },
       ]);

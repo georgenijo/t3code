@@ -16,6 +16,24 @@ function makeActivity(id: string, kind: string, payload: unknown): Orchestration
 }
 
 describe("contextWindow", () => {
+  it("does not inherit an earlier model's capacity when the latest update has usage only", () => {
+    const snapshot = deriveLatestContextWindowSnapshot([
+      makeActivity("claude-usage", "context-window.updated", {
+        usedTokens: 99_000,
+        maxTokens: 1_000_000,
+      }),
+      makeActivity("custom-model-usage", "context-window.updated", {
+        usedTokens: 82_000,
+      }),
+    ]);
+
+    expect(snapshot).toMatchObject({
+      usedTokens: 82_000,
+      maxTokens: null,
+      usedPercentage: null,
+    });
+  });
+
   it("derives the latest valid context window snapshot", () => {
     const snapshot = deriveLatestContextWindowSnapshot([
       makeActivity("activity-1", "context-window.updated", {
