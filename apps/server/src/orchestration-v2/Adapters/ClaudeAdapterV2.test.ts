@@ -73,8 +73,9 @@ import { makeProviderFailure } from "../ProviderFailure.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 
-const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
-const AUTO_COMPACT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
+const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
+const DEFAULT_CLAUDE_SETTINGS = decodeClaudeSettings({});
+const AUTO_COMPACT_CLAUDE_SETTINGS = decodeClaudeSettings({
   autoCompactWindow: "300000",
 });
 const CLAUDE_TEST_MODEL_SELECTION = {
@@ -162,7 +163,7 @@ function makeClaudeTestTurnInput(input: {
 
 describe("ClaudeAdapterV2 runtime query policy", () => {
   it("applies each selected custom model's context allowance to query startup", () => {
-    const settings = Schema.decodeSync(ClaudeSettings)({
+    const settings = decodeClaudeSettings({
       customModels: [
         { slug: "gpt-synthetic-large", contextWindowTokens: 872_000 },
         { slug: "gpt-synthetic-small", contextWindowTokens: 272_000 },
