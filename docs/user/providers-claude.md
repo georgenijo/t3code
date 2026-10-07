@@ -70,9 +70,10 @@ entry can include `contextWindowTokens`, an integer from `8192` to `1000000`:
 Use a limit verified for your router, account, and model. The number above is an
 example, not a default or a guarantee of provider capacity. Leave the field absent
 to use Claude Code's normal model handling. Built-in Claude models retain their
-own context settings. Claude Code ignores this override for model IDs beginning
-with `claude-`, so T3 rejects the field for those IDs instead of showing an
-incorrect limit.
+own context settings. A custom entry that reuses a built-in catalog slug is
+ignored. Claude Code controls capacity for Claude identifiers, native aliases
+such as `opus`, `sonnet`, `haiku`, and `opusplan`, and model IDs ending in `[1m]`.
+T3 reports an error if a custom allowance is selected for those identifiers.
 
 T3 applies the custom allowance whenever it starts the selected model, including
 after switching models within the same Claude provider. It keeps automatic
@@ -80,7 +81,7 @@ compaction enabled and honors your separate **Auto-compact after** setting. If
 Claude Code cannot start the selected model with that allowance, the switch
 reports an error instead of continuing with an incorrect limit.
 
-The context meter uses the active model's reported limit. If the limit is unknown,
+The context meter uses the active model's capacity. If the limit is unknown,
 it shows only tokens used; a value such as `82k` is usage, not the model's capacity.
 
 ## Usage limits

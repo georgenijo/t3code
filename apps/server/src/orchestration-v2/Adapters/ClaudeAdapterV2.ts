@@ -101,6 +101,7 @@ import {
   type ClaudeModelCatalog,
   resolveClaudeCatalogContextWindowTokens,
   resolveClaudeCatalogCustomContextWindowTokens,
+  resolveClaudeModelSlug,
   scopeClaudeModelCatalog,
 } from "../../provider/ClaudeModelCatalog.ts";
 import {
@@ -144,7 +145,7 @@ import {
 export const CLAUDE_PROVIDER = ProviderDriverKind.make("claudeAgent");
 export const CLAUDE_AGENT_SDK_QUERY_PROTOCOL = "claude-agent-sdk.query" as const;
 const CLAUDE_CONTEXT_WINDOW_ENV = "CLAUDE_CODE_MAX_CONTEXT_TOKENS";
-const CLAUDE_NATIVE_MODEL_ID = /^claude(?:-|$)/i;
+const CLAUDE_NATIVE_MODEL_ID = /^(?:claude(?:-|$)|(?:opus|sonnet|haiku|opusplan)$)|\[1m\]$/i;
 
 function claudeContextWindow(
   modelCatalog: ClaudeModelCatalog,
@@ -155,7 +156,10 @@ function claudeContextWindow(
   if (modelSelection.model === "claude-opus-4-6" || modelSelection.model === "claude-opus-4-7") {
     return 1_000_000;
   }
-  return null;
+  const slug = resolveClaudeModelSlug(modelCatalog, modelSelection.model);
+  return modelCatalog.models.some((entry) => entry.model.slug === slug && !entry.model.isCustom)
+    ? 200_000
+    : null;
 }
 
 function claudeCustomContextWindowSelectionIssue(
@@ -164,7 +168,7 @@ function claudeCustomContextWindowSelectionIssue(
 ): string | undefined {
   return resolveClaudeCatalogCustomContextWindowTokens(modelCatalog, modelSelection) !==
     undefined && CLAUDE_NATIVE_MODEL_ID.test(modelSelection.model)
-    ? "Custom contextWindowTokens is supported only for non-Claude model identifiers; Claude-prefixed models use Claude Code's native context window."
+    ? "Custom contextWindowTokens is supported only for non-Claude model identifiers; Claude identifiers, native aliases and [1m] model suffixes use Claude Code's native context window."
     : undefined;
 }
 

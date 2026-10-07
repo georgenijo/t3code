@@ -231,8 +231,36 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     );
   });
 
-  it("rejects custom context allowances for Claude-prefixed model ids", () => {
-    const model = "claude-synthetic-router-model";
+  it.each(["claude-haiku-4-5", "claude-opus-4-5"])(
+    "retains the native 200k limit when the built-in catalog profile omits capacity: %s",
+    (model) => {
+      const catalog = {
+        models: [
+          {
+            model: { slug: model, name: model, capabilities: { optionDescriptors: [] } },
+            runtime: {},
+            compatibility: {},
+          },
+        ],
+      };
+      const usage = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
+        { input_tokens: 100, output_tokens: 10 },
+        { instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID, model },
+        "2026-10-07T00:00:00.000Z",
+        catalog,
+      );
+      assert.equal(usage.maxTokens, 200_000);
+    },
+  );
+
+  it.each([
+    "claude-synthetic-router-model",
+    "opus",
+    "sonnet",
+    "haiku",
+    "opusplan",
+    "gpt-synthetic-router[1m]",
+  ])("rejects custom allowances for runtime-controlled model identifiers: %s", (model) => {
     const modelCatalog = scopeClaudeModelCatalog(SYNTHETIC_CLAUDE_MODEL_CATALOG, [
       { slug: model, contextWindowTokens: 872_000 },
     ]);
