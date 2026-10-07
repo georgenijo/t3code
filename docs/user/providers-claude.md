@@ -85,7 +85,9 @@ allowance makes the instance unavailable until you correct the value.
 After saving, select that custom model and send a message. T3 reloads the settings
 and applies the allowance when it starts the model's next turn. The model editor
 preserves the allowance when you change the model's name or options; the allowance
-itself is configured in the settings file.
+itself is configured in the settings file. Saving model edits from an older
+client also preserves the saved allowance for the same model ID. To remove the
+allowance, delete `contextWindowTokens` from that entry in the settings file.
 
 Use a limit verified for your router, account, and model. The number above is an
 example, not a default or a guarantee of provider capacity. Leave the field absent
