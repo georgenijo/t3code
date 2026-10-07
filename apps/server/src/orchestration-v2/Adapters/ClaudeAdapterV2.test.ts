@@ -320,6 +320,11 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
 
   it.each([
     "claude-synthetic-router-model",
+    "claude",
+    "anthropic/claude-opus-4-8",
+    "us.anthropic.claude-sonnet-4-5-v1:0",
+    "my-gateway/CLAUDE-opus-5-5",
+    "claude-sonnet-4-5@20250929",
     "default",
     "best",
     "fable",
@@ -328,6 +333,8 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     "haiku",
     "opusplan",
     "gpt-synthetic-router[1m]",
+    "gpt-synthetic-router[1m]-deployment",
+    "gpt-synthetic-router[1M]-deployment",
   ])("rejects custom allowances for runtime-controlled model identifiers: %s", (model) => {
     const modelCatalog = scopeClaudeModelCatalog(SYNTHETIC_CLAUDE_MODEL_CATALOG, [
       { slug: model, contextWindowTokens: 872_000 },

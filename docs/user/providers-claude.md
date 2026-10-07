@@ -78,7 +78,11 @@ stored as a string, replace that string with an object using the same ID as
 }
 ```
 
-Save the file, select that custom model, and send a message. T3 reloads the settings
+Save the file while that Claude instance is idle: changing its settings replaces
+the instance and interrupts any turn running on it. A non-integer or out-of-range
+allowance makes the instance unavailable until you correct the value.
+
+After saving, select that custom model and send a message. T3 reloads the settings
 and applies the allowance when it starts the model's next turn. The model editor
 preserves the allowance when you change the model's name or options; the allowance
 itself is configured in the settings file.
@@ -87,9 +91,10 @@ Use a limit verified for your router, account, and model. The number above is an
 example, not a default or a guarantee of provider capacity. Leave the field absent
 to use Claude Code's normal model handling. Built-in Claude models retain their
 own context settings. A custom entry that reuses a built-in catalog slug is
-ignored. Claude Code controls capacity for Claude identifiers, native aliases
+ignored. Claude Code controls capacity for Claude identifiers, including
+provider-prefixed IDs such as `anthropic/claude-opus-4-8`, native aliases
 such as `default`, `best`, `fable`, `opus`, `sonnet`, `haiku`, and `opusplan`, and
-model IDs ending in `[1m]`.
+model IDs containing `[1m]` anywhere, in any casing.
 T3 reports an error if a custom allowance is selected for those identifiers.
 
 T3 applies the custom allowance whenever it starts the selected model, including
