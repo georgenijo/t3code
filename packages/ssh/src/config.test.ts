@@ -255,6 +255,85 @@ describe("ssh config", () => {
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
+  it.effect("retains aliases under unknown Match conditions without guessing their targets", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* makeTempHomeDir();
+      const sshDir = path.join(homeDir, ".ssh");
+      yield* fs.makeDirectory(sshDir);
+      yield* fs.writeFileString(
+        path.join(sshDir, "config"),
+        'Match exec "test -f ~/.work"\n  Include work.conf\nHost ordinary\n  HostName ordinary.example.test\n',
+      );
+      yield* fs.writeFileString(
+        path.join(sshDir, "work.conf"),
+        "Host work\n  HostName conditional.example.test\n",
+      );
+      yield* fs.writeFileString(
+        path.join(sshDir, "known_hosts"),
+        "conditional.example.test ssh-ed25519 AAAA\nordinary.example.test ssh-ed25519 BBBB\n",
+      );
+
+      const hosts = yield* discoverSshHosts({ homeDir });
+      assert.deepEqual(
+        hosts.map(({ alias, hostname }) => [alias, hostname]),
+        [
+          ["conditional.example.test", "conditional.example.test"],
+          ["ordinary", "ordinary.example.test"],
+          ["work", "work"],
+        ],
+      );
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("bounds nested Includes and keeps reading the outer file", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* makeTempHomeDir();
+      const sshDir = path.join(homeDir, ".ssh");
+      yield* fs.makeDirectory(sshDir);
+      yield* fs.writeFileString(path.join(sshDir, "config"), "Include 1.conf\nHost outer\n");
+      for (let index = 1; index <= 18; index += 1) {
+        yield* fs.writeFileString(
+          path.join(sshDir, `${index}.conf`),
+          `Include ${index + 1}.conf\nHost level-${index}\n`,
+        );
+      }
+
+      const hosts = yield* discoverSshHosts({ homeDir });
+      assert.isTrue(hosts.some(({ alias }) => alias === "outer"));
+      assert.isTrue(hosts.some(({ alias }) => alias === "level-15"));
+      assert.isFalse(hosts.some(({ alias }) => alias === "level-16"));
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("bounds repeated Includes without dropping later aliases in the root config", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* makeTempHomeDir();
+      const sshDir = path.join(homeDir, ".ssh");
+      yield* fs.makeDirectory(sshDir);
+      yield* fs.writeFileString(
+        path.join(sshDir, "config"),
+        "Include 1.conf\nHost root\n  HostName root.example.test\n",
+      );
+      for (let index = 1; index <= 9; index += 1) {
+        const next = Array.from({ length: 9 - index }, (_, offset) => `${index + offset + 1}.conf`);
+        yield* fs.writeFileString(
+          path.join(sshDir, `${index}.conf`),
+          `Include ${next.join(" ")}\nHost alias-${index}\n`,
+        );
+      }
+
+      const hosts = yield* discoverSshHosts({ homeDir });
+      assert.equal(hosts.find(({ alias }) => alias === "root")?.hostname, "root.example.test");
+      assert.isTrue(hosts.some(({ alias }) => alias === "alias-9"));
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect("parses known_hosts entries without returning hashed hosts", () =>
     Effect.sync(() => {
       assert.deepEqual(

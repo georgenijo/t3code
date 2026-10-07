@@ -90,7 +90,7 @@ const expandGlob = Effect.fnUntraced(function* (pattern: string) {
 });
 
 interface SshHostNameRule {
-  readonly guards: ReadonlyArray<ReadonlyArray<string>>;
+  readonly guards: ReadonlyArray<ReadonlyArray<string> | null>;
   readonly patterns: ReadonlyArray<string>;
   readonly hostname: string;
 }
@@ -123,10 +123,11 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
   visited = new Set<string>(),
   homeDir: string,
   context: {
-    patterns: ReadonlyArray<string>;
-    guards: ReadonlyArray<ReadonlyArray<string>>;
+    patterns: ReadonlyArray<string> | null;
+    guards: ReadonlyArray<ReadonlyArray<string> | null>;
   },
   hostnameRules: Array<SshHostNameRule>,
+  traversal = { remaining: 256 },
 ): Effect.fn.Return<
   ReadonlyArray<string>,
   PlatformError.PlatformError,
@@ -135,9 +136,16 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const resolvedPath = path.resolve(filePath);
-  if (visited.has(resolvedPath) || !(yield* fs.exists(resolvedPath))) {
+  // Bound repeated conditional Includes as well as recursive nesting for discovery.
+  if (
+    visited.size >= 16 ||
+    traversal.remaining <= 0 ||
+    visited.has(resolvedPath) ||
+    !(yield* fs.exists(resolvedPath))
+  ) {
     return NO_HOSTS;
   }
+  traversal.remaining -= 1;
   visited.add(resolvedPath);
 
   const aliases = new Set<string>();
@@ -170,6 +178,7 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
               guards: [...context.guards, context.patterns],
             },
             hostnameRules,
+            traversal,
           );
           for (const alias of includedAliases) {
             aliases.add(alias);
@@ -187,9 +196,9 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
             ? ["*"]
             : condition === "originalhost" && rawArgs.length === 2
               ? (rawArgs[1]?.split(",") ?? [])
-              : [];
+              : null;
       }
-      if (normalizedDirective === "hostname" && context.patterns.length > 0) {
+      if (normalizedDirective === "hostname" && context.patterns && context.patterns.length > 0) {
         const hostname = rawArgs[0]?.replace(/^(["'])(.*)\1$/u, "$2");
         if (hostname) {
           hostnameRules.push({
@@ -207,7 +216,7 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
       if (alias.length === 0 || hasSshPattern(alias)) {
         continue;
       }
-      if (context.guards.every((guard) => matchesHostPatterns(alias, guard))) {
+      if (context.guards.every((guard) => guard === null || matchesHostPatterns(alias, guard))) {
         aliases.add(alias);
       }
     }
@@ -301,7 +310,7 @@ export const discoverSshHosts = Effect.fnUntraced(
     for (const alias of configAliases) {
       const configuredHostname = hostnameRules.find(
         (rule) =>
-          rule.guards.every((guard) => matchesHostPatterns(alias, guard)) &&
+          rule.guards.every((guard) => guard !== null && matchesHostPatterns(alias, guard)) &&
           matchesHostPatterns(alias, rule.patterns),
       )?.hostname;
       const hostname = configuredHostname
