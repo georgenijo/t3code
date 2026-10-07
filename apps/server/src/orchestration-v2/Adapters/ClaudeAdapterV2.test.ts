@@ -231,6 +231,66 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     );
   });
 
+  it("rejects a settings-file path instead of discarding it for a custom allowance", () => {
+    const model = "gpt-synthetic-large";
+    const modelCatalog = scopeClaudeModelCatalog(SYNTHETIC_CLAUDE_MODEL_CATALOG, [
+      { slug: model, contextWindowTokens: 872_000 },
+    ]);
+
+    assert.throws(
+      () =>
+        ClaudeAdapterV2.makeClaudeQueryOptions({
+          modelSelection: { instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID, model },
+          modelCatalog,
+          nativeThreadId: "native-settings-file",
+          resume: false,
+          cwd: "/workspace",
+          sdkSettings: "/workspace/claude-settings.json",
+        }),
+      TypeError,
+      /settings-file paths cannot be combined with a custom context allowance/,
+    );
+  });
+
+  it("preserves object settings and environment when applying a custom allowance", () => {
+    const model = "gpt-synthetic-large";
+    const modelCatalog = scopeClaudeModelCatalog(SYNTHETIC_CLAUDE_MODEL_CATALOG, [
+      { slug: model, contextWindowTokens: 872_000 },
+    ]);
+    const sdkSettings = {
+      env: { ROUTER_OPTION: "enabled", CLAUDE_CODE_MAX_CONTEXT_TOKENS: "200000" },
+      alwaysThinkingEnabled: false,
+    };
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: { instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID, model },
+      modelCatalog,
+      nativeThreadId: "native-object-settings",
+      resume: false,
+      cwd: "/workspace",
+      settings: AUTO_COMPACT_CLAUDE_SETTINGS,
+      sdkSettings,
+    });
+
+    assert.deepNestedInclude(options.settings, {
+      env: { ROUTER_OPTION: "enabled", CLAUDE_CODE_MAX_CONTEXT_TOKENS: "872000" },
+      alwaysThinkingEnabled: false,
+      autoCompactWindow: 300_000,
+    });
+    assert.equal(sdkSettings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "200000");
+  });
+
+  it("preserves a settings-file path when no custom allowance applies", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "native-settings-file",
+      resume: false,
+      cwd: "/workspace",
+      sdkSettings: "/workspace/claude-settings.json",
+    });
+
+    assert.equal(options.settings, "/workspace/claude-settings.json");
+  });
+
   it.each(["claude-haiku-4-5", "claude-opus-4-5"])(
     "retains the native 200k limit when the built-in catalog profile omits capacity: %s",
     (model) => {
@@ -260,6 +320,9 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
 
   it.each([
     "claude-synthetic-router-model",
+    "default",
+    "best",
+    "fable",
     "opus",
     "sonnet",
     "haiku",

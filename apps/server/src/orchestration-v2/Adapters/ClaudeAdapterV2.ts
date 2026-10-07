@@ -145,7 +145,8 @@ import {
 export const CLAUDE_PROVIDER = ProviderDriverKind.make("claudeAgent");
 export const CLAUDE_AGENT_SDK_QUERY_PROTOCOL = "claude-agent-sdk.query" as const;
 const CLAUDE_CONTEXT_WINDOW_ENV = "CLAUDE_CODE_MAX_CONTEXT_TOKENS";
-const CLAUDE_NATIVE_MODEL_ID = /^(?:claude(?:-|$)|(?:opus|sonnet|haiku|opusplan)$)|\[1m\]$/i;
+const CLAUDE_NATIVE_MODEL_ID =
+  /^(?:claude(?:-|$)|(?:default|best|fable|opus|sonnet|haiku|opusplan)$)|\[1m\]$/i;
 
 function claudeContextWindow(
   modelCatalog: ClaudeModelCatalog,
@@ -893,6 +894,11 @@ export function makeClaudeQueryOptions(input: {
     modelCatalog,
     input.modelSelection,
   );
+  if (customContextWindow !== undefined && typeof input.sdkSettings === "string") {
+    throw new TypeError(
+      "Custom contextWindowTokens requires SDK settings as an object; settings-file paths cannot be combined with a custom context allowance.",
+    );
+  }
   const contextWindowSettings =
     customContextWindow === undefined
       ? querySettings

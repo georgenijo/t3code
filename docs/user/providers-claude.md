@@ -56,8 +56,19 @@ for using composer commands.
 ### Custom models behind a router
 
 A router's model may support more context than Claude Code recognizes from its
-name. For a custom non-Claude model ID, the provider's `customModels` settings
-entry can include `contextWindowTokens`, an integer from `8192` to `1000000`:
+name. First add your custom non-Claude model in **Settings > Providers** for the
+Claude instance that connects to your router.
+
+On that environment's machine, open `~/.t3/userdata/settings.json`. If the server
+uses a custom data directory through `T3CODE_HOME` or `--base-dir`, open
+`userdata/settings.json` inside that directory instead. For a remote environment,
+edit the file on the server, rather than on the device running the client.
+
+Find your Claude instance under `providerInstances`, then its
+`config.customModels` array. Add `contextWindowTokens` to the matching model entry
+as shown below, keeping the other settings and model entries. If your model is
+stored as a string, replace that string with an object using the same ID as
+`slug`. The value must be an integer from `8192` to `1000000`:
 
 ```json
 {
@@ -67,12 +78,18 @@ entry can include `contextWindowTokens`, an integer from `8192` to `1000000`:
 }
 ```
 
+Save the file, select that custom model, and send a message. T3 reloads the settings
+and applies the allowance when it starts the model's next turn. The model editor
+preserves the allowance when you change the model's name or options; the allowance
+itself is configured in the settings file.
+
 Use a limit verified for your router, account, and model. The number above is an
 example, not a default or a guarantee of provider capacity. Leave the field absent
 to use Claude Code's normal model handling. Built-in Claude models retain their
 own context settings. A custom entry that reuses a built-in catalog slug is
 ignored. Claude Code controls capacity for Claude identifiers, native aliases
-such as `opus`, `sonnet`, `haiku`, and `opusplan`, and model IDs ending in `[1m]`.
+such as `default`, `best`, `fable`, `opus`, `sonnet`, `haiku`, and `opusplan`, and
+model IDs ending in `[1m]`.
 T3 reports an error if a custom allowance is selected for those identifiers.
 
 T3 applies the custom allowance whenever it starts the selected model, including
