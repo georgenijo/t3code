@@ -381,6 +381,15 @@ describe("ssh config", () => {
           knownHosts: ["other.example.test", "work.example.test"],
           expected: [
             ["other.example.test", "other.example.test"],
+            ["work", "work.example.test"],
+          ],
+        },
+        {
+          match: 'Match originalhost "work","other"',
+          matchHostname: "conditional.example.test",
+          knownHosts: ["conditional.example.test", "work.example.test"],
+          expected: [
+            ["conditional.example.test", "conditional.example.test"],
             ["work", "work"],
             ["work.example.test", "work.example.test"],
           ],
@@ -391,7 +400,7 @@ describe("ssh config", () => {
         yield* fs.makeDirectory(sshDir);
         yield* fs.writeFileString(
           path.join(sshDir, "config"),
-          `${fixture.match}\n  HostName ${fixture.matchHostname}\nHost work\n`,
+          `${fixture.match}\n  HostName ${fixture.matchHostname}\nHost work\n  HostName work.example.test\n`,
         );
         yield* fs.writeFileString(
           path.join(sshDir, "known_hosts"),
@@ -404,6 +413,34 @@ describe("ssh config", () => {
           fixture.expected,
         );
       }
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("retains raw targets when an earlier Host pattern requires quote parsing", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* makeTempHomeDir();
+      const sshDir = path.join(homeDir, ".ssh");
+      yield* fs.makeDirectory(sshDir);
+      yield* fs.writeFileString(
+        path.join(sshDir, "config"),
+        'Host "w*"\n  HostName conditional.example.test\nHost work\n  HostName work.example.test\n',
+      );
+      yield* fs.writeFileString(
+        path.join(sshDir, "known_hosts"),
+        "conditional.example.test ssh-ed25519 AAAA\nwork.example.test ssh-ed25519 BBBB\n",
+      );
+
+      const hosts = yield* discoverSshHosts({ homeDir });
+      assert.deepEqual(
+        hosts.map(({ alias, hostname }) => [alias, hostname]),
+        [
+          ["conditional.example.test", "conditional.example.test"],
+          ["work", "work"],
+          ["work.example.test", "work.example.test"],
+        ],
+      );
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 

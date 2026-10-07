@@ -201,11 +201,15 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
     if (normalizedDirective !== "host") {
       if (normalizedDirective === "match") {
         const condition = rawArgs[0]?.toLowerCase();
+        const originalHostPatterns = rawArgs[1]?.replace(/^(["'])(.*)\1$/u, "$2");
         context.patterns =
           condition === "all" && rawArgs.length === 1
             ? ["*"]
-            : condition === "originalhost" && rawArgs.length === 2
-              ? (rawArgs[1]?.replace(/^(["'])(.*)\1$/u, "$2").split(",") ?? [])
+            : condition === "originalhost" &&
+                rawArgs.length === 2 &&
+                originalHostPatterns !== undefined &&
+                !/["']/u.test(originalHostPatterns)
+              ? originalHostPatterns.split(",")
               : null;
       }
       if (normalizedDirective === "hostname") {
@@ -221,7 +225,7 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
       continue;
     }
 
-    context.patterns = rawArgs;
+    context.patterns = rawArgs.some((pattern) => /["']/u.test(pattern)) ? null : rawArgs;
     for (const alias of rawArgs) {
       if (alias.length === 0 || hasSshPattern(alias)) {
         continue;
