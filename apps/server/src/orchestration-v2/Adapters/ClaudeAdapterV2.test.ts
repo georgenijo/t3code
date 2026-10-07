@@ -201,7 +201,7 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.equal(unknown.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "500000");
   });
 
-  it("uses the selected custom model capacity and clears unknown capacity", () => {
+  it("uses a declared custom allowance and retains the default when none is declared", () => {
     const customModel = "gpt-synthetic-active";
     const modelCatalog = scopeClaudeModelCatalog(SYNTHETIC_CLAUDE_MODEL_CATALOG, [
       { slug: customModel, contextWindowTokens: 272_000 },
@@ -221,13 +221,14 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
       ).maxTokens,
       272_000,
     );
-    assert.isNull(
+    assert.equal(
       ClaudeAdapterV2.claudeProviderTurnTokenUsage(
         usage,
         selection("gpt-synthetic-unknown"),
         "2026-10-07T00:00:00.000Z",
         modelCatalog,
       ).maxTokens,
+      200_000,
     );
   });
 

@@ -101,7 +101,6 @@ import {
   type ClaudeModelCatalog,
   resolveClaudeCatalogContextWindowTokens,
   resolveClaudeCatalogCustomContextWindowTokens,
-  resolveClaudeModelSlug,
   scopeClaudeModelCatalog,
 } from "../../provider/ClaudeModelCatalog.ts";
 import {
@@ -157,10 +156,7 @@ function claudeContextWindow(
   if (modelSelection.model === "claude-opus-4-6" || modelSelection.model === "claude-opus-4-7") {
     return 1_000_000;
   }
-  const slug = resolveClaudeModelSlug(modelCatalog, modelSelection.model);
-  return modelCatalog.models.some((entry) => entry.model.slug === slug && !entry.model.isCustom)
-    ? 200_000
-    : null;
+  return 200_000;
 }
 
 function claudeCustomContextWindowSelectionIssue(

@@ -105,8 +105,9 @@ compaction enabled and honors your separate **Auto-compact after** setting. If
 Claude Code cannot start the selected model with that allowance, the switch
 reports an error instead of continuing with an incorrect limit.
 
-The context meter uses the active model's capacity. If the limit is unknown,
-it shows only tokens used; a value such as `82k` is usage, not the model's capacity.
+The context meter uses the selected model's declared allowance. Custom models
+without an allowance retain the existing 200,000-token fallback. Switching back
+to one of those models clears the custom allowance and restores that fallback.
 
 ## Usage limits
 
