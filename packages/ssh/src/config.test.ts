@@ -287,6 +287,126 @@ describe("ssh config", () => {
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
+  it.effect("preserves first-value precedence around unresolved Match conditions", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const fixtures = [
+        {
+          config:
+            'Match exec "test -f ~/.work"\n  HostName conditional.example.test\nHost work\n  HostName work.example.test\n',
+          included: null,
+          knownHosts: ["conditional.example.test", "work.example.test"],
+          expected: [
+            ["conditional.example.test", "conditional.example.test"],
+            ["work", "work"],
+            ["work.example.test", "work.example.test"],
+          ],
+        },
+        {
+          config:
+            'Match exec "test -f ~/.work"\n  Include guarded.conf\nHost work\n  HostName work.example.test\n',
+          included: "Host work\n  HostName included.example.test\n",
+          knownHosts: ["included.example.test", "work.example.test"],
+          expected: [
+            ["included.example.test", "included.example.test"],
+            ["work", "work"],
+            ["work.example.test", "work.example.test"],
+          ],
+        },
+        {
+          config:
+            'Host work\n  HostName work.example.test\nMatch exec "test -f ~/.work"\n  HostName conditional.example.test\n',
+          included: null,
+          knownHosts: ["conditional.example.test", "work.example.test"],
+          expected: [
+            ["conditional.example.test", "conditional.example.test"],
+            ["work", "work.example.test"],
+          ],
+        },
+        {
+          config: "Host other\n  Include guarded.conf\nHost work\n  HostName work.example.test\n",
+          included: 'Match exec "test -f ~/.other"\n  HostName unrelated.example.test\n',
+          knownHosts: ["unrelated.example.test", "work.example.test"],
+          expected: [
+            ["other", "other"],
+            ["unrelated.example.test", "unrelated.example.test"],
+            ["work", "work.example.test"],
+          ],
+        },
+      ];
+
+      for (const fixture of fixtures) {
+        const homeDir = yield* makeTempHomeDir();
+        const sshDir = path.join(homeDir, ".ssh");
+        yield* fs.makeDirectory(sshDir);
+        yield* fs.writeFileString(path.join(sshDir, "config"), fixture.config);
+        if (fixture.included !== null) {
+          yield* fs.writeFileString(path.join(sshDir, "guarded.conf"), fixture.included);
+        }
+        yield* fs.writeFileString(
+          path.join(sshDir, "known_hosts"),
+          fixture.knownHosts.map((hostname) => `${hostname} ssh-ed25519 AAAA`).join("\n"),
+        );
+
+        const hosts = yield* discoverSshHosts({ homeDir });
+        assert.deepEqual(
+          hosts.map(({ alias, hostname }) => [alias, hostname]),
+          fixture.expected,
+        );
+      }
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("matches quoted Match originalhost patterns", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      for (const fixture of [
+        {
+          match: 'Match originalhost "work"',
+          matchHostname: "work.example.test",
+          knownHosts: ["work.example.test"],
+          expected: [["work", "work.example.test"]],
+        },
+        {
+          match: "Match originalhost 'other,work'",
+          matchHostname: "work.example.test",
+          knownHosts: ["work.example.test"],
+          expected: [["work", "work.example.test"]],
+        },
+        {
+          match: 'Match originalhost "other"',
+          matchHostname: "other.example.test",
+          knownHosts: ["other.example.test", "work.example.test"],
+          expected: [
+            ["other.example.test", "other.example.test"],
+            ["work", "work"],
+            ["work.example.test", "work.example.test"],
+          ],
+        },
+      ]) {
+        const homeDir = yield* makeTempHomeDir();
+        const sshDir = path.join(homeDir, ".ssh");
+        yield* fs.makeDirectory(sshDir);
+        yield* fs.writeFileString(
+          path.join(sshDir, "config"),
+          `${fixture.match}\n  HostName ${fixture.matchHostname}\nHost work\n`,
+        );
+        yield* fs.writeFileString(
+          path.join(sshDir, "known_hosts"),
+          fixture.knownHosts.map((hostname) => `${hostname} ssh-ed25519 AAAA`).join("\n"),
+        );
+
+        const hosts = yield* discoverSshHosts({ homeDir });
+        assert.deepEqual(
+          hosts.map(({ alias, hostname }) => [alias, hostname]),
+          fixture.expected,
+        );
+      }
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect("bounds nested Includes and keeps reading the outer file", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

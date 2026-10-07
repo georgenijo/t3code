@@ -91,9 +91,11 @@ const expandGlob = Effect.fnUntraced(function* (pattern: string) {
 
 interface SshHostNameRule {
   readonly guards: ReadonlyArray<ReadonlyArray<string> | null>;
-  readonly patterns: ReadonlyArray<string>;
+  readonly patterns: ReadonlyArray<string> | null;
   readonly hostname: string;
 }
+
+type SshHostNameRuleMatch = "match" | "no-match" | "unresolved";
 
 function expandConfiguredHostname(hostname: string, alias: string): string | null {
   let supported = true;
@@ -116,6 +118,14 @@ function matchesHostPatterns(alias: string, patterns: ReadonlyArray<string>): bo
     matched = true;
   }
   return matched;
+}
+
+function matchSshHostNameRule(alias: string, rule: SshHostNameRule): SshHostNameRuleMatch {
+  const scopes = [...rule.guards, rule.patterns];
+  if (scopes.some((patterns) => patterns !== null && !matchesHostPatterns(alias, patterns))) {
+    return "no-match";
+  }
+  return scopes.some((patterns) => patterns === null) ? "unresolved" : "match";
 }
 
 const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
@@ -195,10 +205,10 @@ const collectSshConfigAliasesFromFile = Effect.fnUntraced(function* (
           condition === "all" && rawArgs.length === 1
             ? ["*"]
             : condition === "originalhost" && rawArgs.length === 2
-              ? (rawArgs[1]?.split(",") ?? [])
+              ? (rawArgs[1]?.replace(/^(["'])(.*)\1$/u, "$2").split(",") ?? [])
               : null;
       }
-      if (normalizedDirective === "hostname" && context.patterns && context.patterns.length > 0) {
+      if (normalizedDirective === "hostname") {
         const hostname = rawArgs[0]?.replace(/^(["'])(.*)\1$/u, "$2");
         if (hostname) {
           hostnameRules.push({
@@ -308,11 +318,17 @@ export const discoverSshHosts = Effect.fnUntraced(
     const configuredTargets = new Set<string>();
 
     for (const alias of configAliases) {
-      const configuredHostname = hostnameRules.find(
-        (rule) =>
-          rule.guards.every((guard) => guard !== null && matchesHostPatterns(alias, guard)) &&
-          matchesHostPatterns(alias, rule.patterns),
-      )?.hostname;
+      let configuredHostname: string | undefined;
+      for (const rule of hostnameRules) {
+        const ruleMatch = matchSshHostNameRule(alias, rule);
+        if (ruleMatch === "no-match") {
+          continue;
+        }
+        if (ruleMatch === "match") {
+          configuredHostname = rule.hostname;
+        }
+        break;
+      }
       const hostname = configuredHostname
         ? (expandConfiguredHostname(configuredHostname, alias) ?? alias)
         : alias;
