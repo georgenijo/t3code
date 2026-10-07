@@ -237,7 +237,12 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
       const catalog = {
         models: [
           {
-            model: { slug: model, name: model, capabilities: { optionDescriptors: [] } },
+            model: {
+              slug: model,
+              name: model,
+              isCustom: false,
+              capabilities: { optionDescriptors: [] },
+            },
             runtime: {},
             compatibility: {},
           },
