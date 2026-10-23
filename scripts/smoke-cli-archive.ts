@@ -25,6 +25,7 @@ import * as NetService from "@t3tools/shared/Net";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { windowsSystemTar } from "./build-cli-archive.ts";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { SERVICE_LAUNCHER_PROTOCOL } from "../apps/server/src/cloud/serviceProtocol.ts";
 
 export class CliArchiveSmokeError extends Schema.TaggedError<CliArchiveSmokeError>()(
   "CliArchiveSmokeError",
@@ -125,6 +126,26 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     });
   }
 
+  // macOS installs this signed executable at a stable path without its
+  // version's native packages. Exercise the emitted artifact, since bundling
+  // can make a source-level dynamic import eager again.
+  const launcherDir = path.join(scratch, "standalone-launcher");
+  yield* fs.makeDirectory(launcherDir);
+  const launcher = path.join(launcherDir, platform === "win32" ? "t3.exe" : "t3");
+  yield* fs.copyFile(executable, launcher);
+  if (platform !== "win32") yield* fs.chmod(launcher, 0o755);
+  const protocol = yield* runExecutable(
+    launcher,
+    ["__service-launcher", "--protocol-version"],
+    launcherDir,
+  );
+  if (protocol.exitCode !== 0 || protocol.stdout.trim() !== String(SERVICE_LAUNCHER_PROTOCOL)) {
+    return yield* new CliArchiveSmokeError({
+      step: "running the standalone service launcher",
+      detail: `exit ${String(protocol.exitCode)}\n${protocol.stdout}${protocol.stderr}`,
+    });
+  }
+
   // Starting the server is what actually opens sqlite, loads the terminal
   // and search stacks (node-pty, fff, msgpackr-extract), and serves the
   // client, so probe a real `serve` in a scratch home rather than a
@@ -183,7 +204,9 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
       detail: `no 200 from / within 30s\n${stdout}${stderr}`,
     });
   }
-  yield* Effect.log(`[cli-smoke] ${root}: --version passed and serve answered on ${String(port)}.`);
+  yield* Effect.log(
+    `[cli-smoke] ${root}: --version and standalone launcher passed; serve answered on ${String(port)}.`,
+  );
 });
 
 const command = Command.make(

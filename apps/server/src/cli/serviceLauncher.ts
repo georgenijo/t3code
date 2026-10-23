@@ -1,12 +1,11 @@
 import * as Effect from "effect/Effect";
 import { Command } from "effect/unstable/cli";
 
-import { main as runServiceLauncher } from "../serviceLauncher.ts";
+import { runServiceLauncherCli } from "../serviceLauncher.ts";
 
 /**
- * Hosts the service launcher inside the CLI executable. The service manager
- * runs `t3 __service-launcher` and the launcher spawns the server from the
- * same executable, so the machine needs no Node to run either.
+ * Registers the hidden command for the CLI parser. The process entrypoint
+ * dispatches it directly before loading the CLI's server dependencies.
  *
  * The launcher owns SIGTERM handling and the process lifetime: it must finish
  * stopping its child before the process exits, so it runs detached from the
@@ -17,11 +16,7 @@ export const serviceLauncherCommand = Command.make("__service-launcher").pipe(
   Command.unlisted,
   Command.withHandler(() =>
     Effect.sync(() => {
-      runServiceLauncher().catch((cause: unknown) => {
-        const error = cause instanceof Error ? cause : new Error(String(cause));
-        process.stderr.write(`[service-launcher] ${error.message}\n`);
-        process.exitCode = 1;
-      });
+      void runServiceLauncherCli([]);
     }),
   ),
 );

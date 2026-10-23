@@ -635,3 +635,19 @@ export async function main(): Promise<void> {
   const state = await readServiceState(statePath);
   await new Launcher(baseDir, state).run();
 }
+
+/** The installer probes this path without loading server dependencies or state. */
+export async function runServiceLauncherCli(args: ReadonlyArray<string>): Promise<void> {
+  try {
+    if (args.length === 1 && args[0] === "--protocol-version") {
+      process.stdout.write(`${SERVICE_LAUNCHER_PROTOCOL}\n`);
+      return;
+    }
+    if (args.length !== 0) throw new Error("Unexpected service launcher arguments.");
+    await main();
+  } catch (cause) {
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    process.stderr.write(`[service-launcher] ${error.message}\n`);
+    process.exitCode = 1;
+  }
+}

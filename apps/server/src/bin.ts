@@ -4,8 +4,8 @@
  * Every ACP agent spawns `t3 acp-mcp-bridge` while opening its session, and
  * terminal-fallback agents run `t3 acp-mcp-call` per tool call, so their
  * startup sits on first-message latency. Both dispatch here before the full
- * CLI module graph (seconds of evaluation) loads; everything else defers to
- * the real CLI in ./binCli.ts.
+ * CLI module graph (seconds of evaluation) loads. The boot service launcher
+ * also runs here: its stable macOS copy has no runtime dependencies beside it.
  */
 import { isEntrypoint } from "./entrypoint.ts";
 
@@ -17,7 +17,10 @@ if (
   })
 ) {
   const command = process.argv[2];
-  if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
+  if (command === "__service-launcher") {
+    const { runServiceLauncherCli } = await import("./serviceLauncher.ts");
+    await runServiceLauncherCli(process.argv.slice(3));
+  } else if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
     const { runAcpMcpCliFastPath } = await import("./mcp/AcpMcpStdioBridge.ts");
     await runAcpMcpCliFastPath(command, process.argv.slice(3));
   } else {

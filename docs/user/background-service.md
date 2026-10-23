@@ -89,9 +89,16 @@ that session open.
 
 On macOS, check **System Settings → General → Login Items** if the service no
 longer starts at login. If agent work cannot access Desktop, Documents, or
-Downloads, it may need Full Disk Access for the `t3` executable listed in
-`ProgramArguments` in
-`~/Library/LaunchAgents/com.t3tools.t3code.service.plist`.
+Downloads, grant Full Disk Access to `~/.t3/runtime/service/t3` (or
+`runtime/service/t3` under your custom T3 home). In **System Settings → Privacy
+& Security → Full Disk Access**, press **+**, then **Cmd-Shift-G** to enter
+that path. Restart the service after enabling it.
+
+The service keeps this launcher at the same path across updates. Official
+signed releases retain the grant; custom builds with a different signing
+identity may need it again. For an older installation, run `t3 update`
+first. Once the new launcher works, obsolete versioned `t3` entries can be
+removed from Full Disk Access; individual server versions do not need grants.
 
 For failures after signing in to T3 Connect, see
 [connection troubleshooting](./remote-access.md#t3-connect-troubleshooting).

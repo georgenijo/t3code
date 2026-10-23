@@ -82,10 +82,8 @@ export function bootServiceBaseDirOf(contents: string): string | undefined {
 
 export interface BootServicePlan {
   /**
-   * What the service manager executes. npm-distributed runtimes run the
-   * standalone launcher script with the installing Node; archive-distributed
-   * runtimes run their own executable, which hosts the launcher as a hidden
-   * subcommand so the machine never needs Node.
+   * The executable hosting the hidden launcher subcommand. macOS uses a
+   * stable copy to retain its privacy permissions across signed updates.
    */
   readonly program: ReadonlyArray<string>;
   readonly baseDir: string;
@@ -605,6 +603,14 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const statePath = path.join(input.baseDir, "runtime", SERVICE_STATE_FILE);
   const restartPendingPath = path.join(input.baseDir, "runtime", SERVICE_RESTART_PENDING_FILE);
   const runtimePaths = pinnedRuntimePaths(path, input.baseDir, input.cliVersion, platform);
+  // TCC records command-line executables by their real path. Keep the signed
+  // launcher at one path while its children continue using immutable runtimes.
+  // This must be a copy: a symlink resolves back into the version directory.
+  const launcherPath =
+    platform === "darwin"
+      ? path.join(input.baseDir, "runtime", "service", "t3")
+      : runtimePaths.entryPath;
+  const launcherVersionPath = `${launcherPath}.version`;
   const writeDurably = (filePath: string, contents: string) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -624,10 +630,8 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         );
       }),
     ).pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
-  // The executable hosts the launcher as a hidden subcommand of itself, so
-  // the unit runs the pinned runtime directly.
   const plan: BootServicePlan = {
-    program: [runtimePaths.entryPath, "__service-launcher"],
+    program: [launcherPath, "__service-launcher"],
     baseDir: input.baseDir,
     logPath,
     unitPath,
@@ -684,6 +688,19 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         return entry.optional === true ? run.pipe(Effect.ignore) : run.pipe(Effect.asVoid);
       },
       { discard: true },
+    );
+
+  const probeLauncher = (executable: string) =>
+    runStep(
+      "verifying the standalone service launcher",
+      executable,
+      ["__service-launcher", "--protocol-version"],
+      { timeout: Duration.seconds(30) },
+    ).pipe(
+      Effect.filterOrFail(
+        (result) => result.stdout.trim() === String(SERVICE_LAUNCHER_PROTOCOL),
+        () => new BootServiceCommandError({ step: "verifying the standalone service launcher" }),
+      ),
     );
 
   const probe = (command: string, args: ReadonlyArray<string>) =>
@@ -813,6 +830,40 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
           : new BootServiceInstallError({ cause: error }),
       ),
     );
+    const stagedLauncher =
+      platform === "darwin"
+        ? yield* Effect.gen(function* () {
+            const directory = path.dirname(launcherPath);
+            yield* fs.makeDirectory(directory, { recursive: true });
+            const staged = yield* fs.makeTempFileScoped({ directory, prefix: ".launcher-" });
+            // Copy bytes without re-signing: Developer ID's designated
+            // requirement must survive both staging and nightly updates.
+            yield* fs.copyFile(runtimePaths.entryPath, staged);
+            yield* fs.chmod(staged, 0o755);
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                yield* (yield* fs.open(staged, { flag: "r+" })).sync;
+              }),
+            );
+            const standalone = yield* probeLauncher(staged).pipe(
+              Effect.as(true),
+              Effect.catch((cause) =>
+                Effect.gen(function* () {
+                  if (!(yield* fs.exists(launcherPath))) return yield* cause;
+                  // Older releases load server dependencies before dispatch.
+                  // A compatible existing launcher can still run those servers.
+                  yield* probeLauncher(launcherPath);
+                  return false;
+                }),
+              ),
+            );
+            return standalone ? staged : undefined;
+          }).pipe(
+            Effect.mapError((cause) =>
+              cause._tag === "PlatformError" ? new BootServiceInstallError({ cause }) : cause,
+            ),
+          )
+        : undefined;
     const installed = yield* fs
       .exists(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
@@ -884,6 +935,17 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
           return yield* new BootServiceUpdatePendingError();
         }
       }
+      if (stagedLauncher !== undefined) {
+        // Never truncate the inode a running launcher is executing. With
+        // start=false it keeps the old image until the explicit restart.
+        yield* fs.rename(stagedLauncher, launcherPath);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* (yield* fs.open(path.dirname(launcherPath), { flag: "r" })).sync;
+          }),
+        );
+        yield* writeDurably(launcherVersionPath, `${input.cliVersion}\n`);
+      }
       yield* writeDurably(unitPath, manager.render(plan));
 
       if (start) {
@@ -899,7 +961,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       ),
     );
     return plan;
-  });
+  }, Effect.scoped);
 
   const restart: BootService["Service"]["restart"] = Effect.gen(function* () {
     const manager = yield* requireManager;
@@ -950,12 +1012,17 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     if (!(yield* fs.exists(unitPath))) {
       return { supported: true, installed: false, current: false, unitPath, logPath };
     }
-    const [unit, runtimeEntryExists, runtimeSentinel, stateText] = yield* Effect.all([
-      fs.readFileString(unitPath),
-      fs.exists(runtimePaths.entryPath),
-      fs.readFileString(runtimePaths.sentinelPath).pipe(Effect.option),
-      fs.readFileString(statePath).pipe(Effect.option),
-    ]);
+    const [unit, runtimeEntryExists, runtimeSentinel, stateText, launcherExists, launcherVersion] =
+      yield* Effect.all([
+        fs.readFileString(unitPath),
+        fs.exists(runtimePaths.entryPath),
+        fs.readFileString(runtimePaths.sentinelPath).pipe(Effect.option),
+        fs.readFileString(statePath).pipe(Effect.option),
+        fs.exists(launcherPath),
+        platform === "darwin"
+          ? fs.readFileString(launcherVersionPath).pipe(Effect.option)
+          : Effect.succeedSome(input.cliVersion),
+      ]);
     const state = Option.isSome(stateText) ? parseServiceState(stateText.value) : undefined;
     const installedVersion = Option.isSome(stateText)
       ? serviceStateActiveVersion(stateText.value)
@@ -978,6 +1045,9 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         problems.length === 0 &&
         normalizeUnit(unit) === normalizeUnit(detectedManager.render(plan)) &&
         runtimeEntryExists &&
+        launcherExists &&
+        Option.isSome(launcherVersion) &&
+        launcherVersion.value.trim() === input.cliVersion &&
         Option.isSome(runtimeSentinel) &&
         runtimeSentinel.value.trim() === input.cliVersion &&
         state?.activeVersion === input.cliVersion &&

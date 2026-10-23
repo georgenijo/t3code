@@ -74,7 +74,7 @@ it("survives the kernel OOM-killing a greedy agent child", () => {
   expect(unit).toContain("OOMPolicy=continue");
 });
 
-const macRuntime = "/Users/theo/.t3/runtime/versions/1.2.3/t3";
+const macRuntime = "/Users/theo/.t3/runtime/service/t3";
 const macPlan = {
   program: [macRuntime, "__service-launcher"],
   baseDir: "/Users/theo/.t3",
@@ -85,7 +85,7 @@ const macInstallerPath =
   "/opt/homebrew/bin:/Users/theo/.npm-global/bin:/Users/theo/.nvm/versions/node/v22.16.0/bin:/usr/bin:/bin";
 const macRenderOptions = { homeDir: "/Users/theo", environmentPath: macInstallerPath };
 
-it("runs the pinned runtime's own executable as the launch agent", () => {
+it("runs the stable executable as the launch agent", () => {
   const plist = BootService.renderBootServicePlist(macPlan, macRenderOptions);
 
   expect(plist).toContain(
@@ -154,11 +154,14 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
     linger: string;
     enabled: boolean;
     active: boolean;
+    launcherProtocol: string;
+    candidateLauncherProtocol?: string;
   } = {
     failCommand: undefined,
     linger: "yes",
     enabled: true,
     active: true,
+    launcherProtocol: String(SERVICE_LAUNCHER_PROTOCOL),
   };
   const runner = ProcessRunner.ProcessRunner.of({
     run: Effect.fn("test.run_boot_service_command")(function* (
@@ -181,17 +184,19 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       }
       return {
         stdout:
-          input.args[0] === "--version"
-            ? // The runtime under test reports the version of the directory it
-              // was launched from, like the real executable.
-              `t3 v${/versions\/([^/]+)\//.exec(input.command)?.[1] ?? "1.2.3"}\n`
-            : input.command === "loginctl" && input.args[0] === "show-user"
-              ? `${control.linger}\n`
-              : input.args[1] === "is-enabled"
-                ? control.enabled
-                  ? "enabled\n"
-                  : "disabled\n"
-                : "",
+          input.args[0] === "__service-launcher"
+            ? `${input.command.endsWith("/service/t3") ? control.launcherProtocol : (control.candidateLauncherProtocol ?? control.launcherProtocol)}\n`
+            : input.args[0] === "--version"
+              ? // The runtime under test reports the version of the directory it
+                // was launched from, like the real executable.
+                `t3 v${/versions\/([^/]+)\//.exec(input.command)?.[1] ?? "1.2.3"}\n`
+              : input.command === "loginctl" && input.args[0] === "show-user"
+                ? `${control.linger}\n`
+                : input.args[1] === "is-enabled"
+                  ? control.enabled
+                    ? "enabled\n"
+                    : "disabled\n"
+                  : "",
         stderr: "",
         code: ChildProcessSpawner.ExitCode(
           failed || (input.args[1] === "is-active" && !control.active) ? 1 : 0,
@@ -688,7 +693,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
 
   it.effect("installs, reports current state, and uninstalls on macOS", () =>
     Effect.gen(function* () {
-      const { service, fs, statePath, commands, timeouts, runtime } = yield* makeHarness("darwin");
+      const { service, fs, statePath, commands, timeouts } = yield* makeHarness("darwin");
       const path = yield* Path.Path;
       const plan = yield* service.install();
 
@@ -705,7 +710,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
         activeVersion: "1.2.3",
       });
       expect(yield* fs.readFileString(plan.unitPath)).toContain(
-        `    <string>${runtime.entryPath}</string>\n    <string>__service-launcher</string>`,
+        `    <string>${plan.program[0]}</string>\n    <string>__service-launcher</string>`,
       );
       expect(yield* service.status).toMatchObject({
         current: true,
@@ -719,6 +724,96 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       expect(timeouts.get("launchctl bootout --wait gui/501/com.t3tools.t3code.service")).toEqual(
         Duration.seconds(120),
       );
+    }),
+  );
+
+  it.effect("migrates a versioned launch agent and keeps its real path across updates", () =>
+    Effect.gen(function* () {
+      const { service, makeService, fs, runtime, commands, statePath } =
+        yield* makeHarness("darwin");
+      const path = yield* Path.Path;
+      const first = yield* service.install();
+      // An existing installation uses the immutable runtime itself as launcher.
+      yield* fs.writeFileString(
+        first.unitPath,
+        (yield* fs.readFileString(first.unitPath)).replace(first.program[0]!, runtime.entryPath),
+      );
+      expect((yield* service.status).current).toBe(false);
+      const migrated = yield* service.install();
+      const launcherPath = migrated.program[0]!;
+      expect(launcherPath).toBe(path.join(path.dirname(statePath), "service", "t3"));
+      expect((yield* fs.stat(launcherPath)).type).toBe("File");
+      expect(yield* fs.readFile(launcherPath)).toEqual(yield* fs.readFile(runtime.entryPath));
+      // A hard link observes the old inode even after replacement.
+      const oldImage = path.join(path.dirname(launcherPath), "old-image");
+      yield* fs.link(launcherPath, oldImage);
+      const next = yield* makeService(undefined, "1.2.4");
+      const nextRuntime = path.join(path.dirname(runtime.versionDir), "1.2.4", "t3");
+      yield* fs.writeFileString(nextRuntime, "#!/bin/sh\n# next launcher\n");
+      // A remote update changes the active child without replacing its launcher.
+      yield* fs.writeFileString(
+        statePath,
+        `{"protocol":${SERVICE_LAUNCHER_PROTOCOL},"activeVersion":"1.2.4"}`,
+      );
+      expect((yield* next.status).current).toBe(false);
+      commands.length = 0;
+      const updated = yield* next.install({ start: false });
+      expect(updated.program).toEqual(migrated.program);
+      expect(yield* fs.readFileString(launcherPath)).toBe("#!/bin/sh\n# next launcher\n");
+      expect(yield* fs.readFileString(oldImage)).toBe("#!/bin/sh\n");
+      expect(yield* fs.readFileString(`${launcherPath}.version`)).toBe("1.2.4\n");
+      expect(commands.some((command) => command.startsWith("launchctl "))).toBe(false);
+      expect((yield* next.status).problems).toContain("restart-pending");
+      yield* next.restart;
+      expect((yield* next.status).current).toBe(true);
+      yield* fs.remove(launcherPath);
+      expect((yield* next.status).current).toBe(false);
+    }),
+  );
+
+  it.effect("rejects a non-standalone launcher before stopping or replacing the service", () =>
+    Effect.gen(function* () {
+      const { service, makeService, fs, commands, control, statePath } =
+        yield* makeHarness("darwin");
+      const plan = yield* service.install();
+      const originalUnit = yield* fs.readFileString(plan.unitPath);
+      const originalState = yield* fs.readFileString(statePath);
+      const originalLauncher = yield* fs.readFile(plan.program[0]!);
+      const next = yield* makeService(undefined, "1.2.4");
+      control.launcherProtocol = "unsupported";
+      commands.length = 0;
+      expect((yield* next.install().pipe(Effect.flip))._tag).toBe("BootServiceCommandError");
+      expect(commands.some((command) => command.startsWith("launchctl "))).toBe(false);
+      expect(yield* fs.readFileString(plan.unitPath)).toBe(originalUnit);
+      expect(yield* fs.readFileString(statePath)).toBe(originalState);
+      expect(yield* fs.readFile(plan.program[0]!)).toEqual(originalLauncher);
+      const path = yield* Path.Path;
+      expect((yield* fs.readDirectory(path.dirname(plan.program[0]!))).toSorted()).toEqual([
+        "t3",
+        "t3.version",
+      ]);
+    }),
+  );
+
+  it.effect("keeps a compatible launcher when downgrading to a pre-standalone release", () =>
+    Effect.gen(function* () {
+      const { service, makeService, fs, commands, control, statePath } =
+        yield* makeHarness("darwin");
+      const installed = yield* service.install();
+      const launcher = installed.program[0]!;
+      const original = yield* fs.readFile(launcher);
+      const older = yield* makeService(undefined, "1.2.2");
+      control.candidateLauncherProtocol = "unsupported";
+      commands.length = 0;
+      const downgraded = yield* older.install({ allowDowngrade: true, start: false });
+      expect(downgraded.program).toEqual(installed.program);
+      expect(yield* fs.readFile(launcher)).toEqual(original);
+      expect(yield* fs.readFileString(`${launcher}.version`)).toBe("1.2.3\n");
+      expect(parseServiceState(yield* fs.readFileString(statePath))?.activeVersion).toBe("1.2.2");
+      expect(commands).toContain(`${launcher} __service-launcher --protocol-version`);
+      expect(commands.some((command) => command.startsWith("launchctl "))).toBe(false);
+      yield* older.restart;
+      expect((yield* older.status).installedVersion).toBe("1.2.2");
     }),
   );
 
